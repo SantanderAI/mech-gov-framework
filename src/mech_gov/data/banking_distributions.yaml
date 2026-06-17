@@ -1,0 +1,441 @@
+# =============================================================================
+# Banking example dataset — distribution definitions per transaction type
+# =============================================================================
+#
+# Distribution parameters for the bundled synthetic banking dataset used by
+# mech_gov.data.generator and loaded by mech_gov.data.distributions.
+#
+# IMPORTANT: These parameters are INFORMED DESIGN CHOICES, not empirical
+# estimates from any proprietary data. Each rationale cites a methodological
+# precedent or public domain reference that guided the choice. Robustness can
+# be probed with the perturb_params helper in mech_gov.data.distributions.
+#
+# Citation keys ([AuthorYear]) refer to publicly available references.
+#
+# Lock this file before Phase 4 experiments. Any changes require re-running all.
+
+# =============================================================================
+# DISTRIBUTION FAMILY RATIONALE (applies across all transaction types)
+# =============================================================================
+#
+# Beta(a,b) for bounded [0,1] scores:
+#   The Beta distribution is the canonical model for random variables on [0,1].
+#   In credit risk, Beta distributions are standard for Loss Given Default (LGD)
+#   modeling [Hlawatsch2011, Anolli2024] and probability-of-default calibration
+#   [BCBS1999]. The two shape parameters allow flexible skewness to match
+#   domain-specific score profiles. [Johnson1995] §25.
+#
+# LogNormal(mu, sigma) for monetary amounts:
+#   Financial transaction amounts are well-documented as lognormally distributed,
+#   arising from multiplicative processes (compound interest, tiered pricing).
+#   Empirical evidence: [Limpert2001], Basel II/III operational risk severity
+#   modeling [BCBS2001_QIS, DeFontnouvelle2003], IBM AMLworld synthetic
+#   transactions [Altman2023]. J.P. Morgan synthetic data report confirms
+#   lognormal as standard for retail banking amounts [JPMorgan2022].
+#
+# Exponential(lambda) for duration/tenure:
+#   The exponential distribution models memoryless inter-event times. For
+#   customer tenure, it approximates the geometric churn process where the
+#   hazard rate is approximately constant [Fader2005]. Banking customer
+#   lifetime models commonly use exponential or gamma mixtures of
+#   exponentials [Fader2005, Schmittlein1987].
+#
+# Bernoulli(p) with risk-conditioning for regulatory flags:
+#   Flags are binary indicators. Base rates are informed by FATF typology
+#   reports [FATF2021] and industry false-positive benchmarks (sanctions
+#   screening: ~95% false positive rate [Sardine2024, ComplyStream2024]).
+#   Conditional modulation on risk_score follows the FATF principle that
+#   risk indicators co-occur [FATF2021].
+# =============================================================================
+
+credit_approval:
+  risk_score:
+    distribution: beta
+    params: {a: 2.0, b: 5.0}
+    # E[X] = 0.286, Var = 0.026, mode = 0.20
+    # ~71% of mass below 0.4; ~5% above 0.7
+    rationale: >
+      Informed design choice. Most credit applications in a performing portfolio
+      are low-risk (right-skewed toward 0). Beta(2,5) produces E[r]=0.29, consistent
+      with the empirical observation that ~70-80% of retail credit applications are
+      classified as low/standard risk by internal rating systems [BCBS1999, OCC2001].
+      Beta is the canonical distribution for bounded [0,1] risk scores [Johnson1995]
+      and is standard in LGD modeling [Hlawatsch2011, Anolli2024].
+  completeness:
+    distribution: beta
+    params: {a: 5.0, b: 2.0}
+    # E[X] = 0.714, Var = 0.026, mode = 0.80
+    # ~71% of mass above 0.6
+    rationale: >
+      Informed design choice. Credit applications undergo structured documentation
+      requirements (KYC, income verification, collateral appraisal), so information
+      completeness is left-skewed (most files are well-documented). Beta(5,2)
+      produces E[iota]=0.71. The FCA synthetic data report [FCA2024] notes that
+      documentation quality is a key feature in synthetic compliance datasets.
+  flags:
+    probabilities:
+      AML: 0.05
+      KYC: 0.10
+      SANCTIONS: 0.02
+      INSIDER: 0.03
+      CONCENTRATION: 0.15
+    correlation_strength: 0.5
+    rationale: >
+      Informed design choice guided by FATF typology reports [FATF2021] and
+      industry benchmarks. AML flag rate of 5% reflects the ~2-5% suspicious
+      activity report (SAR) filing rate in retail banking [FinCEN2023].
+      Sanctions screening produces ~95% false positives [Sardine2024], implying
+      ~2% true positive rate for credit. KYC flags at 10% reflect incomplete
+      documentation. Concentration at 15% reflects portfolio-level exposure,
+      which is structural rather than case-specific. Correlation strength 0.5
+      is moderate: credit risk does not always imply regulatory flags.
+  amount_usd:
+    distribution: lognormal
+    params: {mu: 11.5, sigma: 1.5}
+    # median = exp(11.5) ≈ $98,716; mean ≈ $307K; P(>$1M) ≈ 16%
+    rationale: >
+      Informed design choice. LogNormal is the standard distribution for
+      financial transaction amounts [Limpert2001, BCBS2001_QIS]. Parameters
+      produce median ~$100K, consistent with mid-market commercial credit
+      facilities. IBM AMLworld [Altman2023] and PaySim [LopezRojas2016] also
+      use lognormal for transaction amounts. sigma=1.5 produces a heavy right
+      tail (CV≈3.5), reflecting the wide range from small business loans to
+      large corporate facilities.
+  jurisdiction:
+    distribution: categorical
+    values: ["US", "EU", "UK", "LATAM", "APAC"]
+    weights: [0.35, 0.25, 0.15, 0.15, 0.10]
+    rationale: >
+      Informed design choice. Weights approximate the geographic distribution
+      of cross-border banking activity for a global bank. US and EU dominate
+      due to volume [BIS2022_Triennial]. UK is separated from EU post-Brexit.
+      LATAM and APAC weights reflect Santander's geographic footprint as a
+      contextual but non-critical parameter.
+  customer_tenure_years:
+    distribution: exponential
+    params: {lambda: 0.15}
+    # E[X] = 6.67 years; P(>10yr) ≈ 22%; P(>20yr) ≈ 5%
+    rationale: >
+      Informed design choice. Exponential distribution models memoryless
+      customer lifetimes with constant churn hazard [Fader2005]. lambda=0.15
+      gives E[tenure]=6.7 years, consistent with average banking relationship
+      duration in commercial lending. Long-tail captures relationship banking
+      where some clients have 20+ year histories [Schmittlein1987].
+  counterparty_risk:
+    distribution: beta
+    params: {a: 2.0, b: 8.0}
+    # E[X] = 0.20, Var = 0.015, mode = 0.125
+    # ~90% of mass below 0.4
+    rationale: >
+      Informed design choice. For credit approval, counterparty risk is
+      generally low (most borrowers are pre-screened). Beta(2,8) produces
+      E[cpr]=0.20, reflecting that the majority of credit counterparties
+      are investment-grade or equivalent [BCBS_CCR2014]. Beta is standard
+      for bounded risk measures [Johnson1995].
+
+fraud_alert:
+  risk_score:
+    distribution: beta
+    params: {a: 5.0, b: 2.0}
+    # E[X] = 0.714, Var = 0.026, mode = 0.80
+    # ~71% of mass above 0.6
+    rationale: >
+      Informed design choice. Fraud alerts are generated by detection systems
+      that pre-filter for suspicious activity; they are high-risk by selection.
+      Beta(5,2) produces E[r]=0.71, reflecting that most fraud alerts carry
+      elevated risk. The ~29% moderate/low-risk mass represents false positives
+      in the detection pipeline, consistent with the ~30% false positive rate
+      in production fraud systems [DalPozzolo2018].
+  completeness:
+    distribution: beta
+    params: {a: 2.0, b: 3.0}
+    # E[X] = 0.40, Var = 0.040, mode = 0.25
+    # ~60% of mass below 0.5
+    rationale: >
+      Informed design choice. Fraud cases are typically flagged in real-time
+      with incomplete information; investigation is ongoing at the time of
+      the compliance decision. Beta(2,3) produces E[iota]=0.40. The high
+      variance (0.04) reflects heterogeneity: some fraud alerts have extensive
+      transaction histories while others are based on single anomalous events.
+  flags:
+    probabilities:
+      AML: 0.40
+      KYC: 0.25
+      SANCTIONS: 0.15
+      INSIDER: 0.10
+      CONCENTRATION: 0.05
+    correlation_strength: 0.7
+    rationale: >
+      Informed design choice guided by FATF typologies [FATF2021]. AML at
+      40% reflects the strong empirical link between fraud and money
+      laundering: FATF notes that proceeds of fraud are a primary predicate
+      offence for ML. KYC at 25% reflects identity-related fraud. Sanctions
+      at 15% captures cross-border fraud with sanctions nexus. Correlation
+      strength 0.7 is high: fraud risk is tightly coupled to regulatory
+      flag activation [FATF2021].
+  amount_usd:
+    distribution: lognormal
+    params: {mu: 9.0, sigma: 2.0}
+    # median = exp(9.0) ≈ $8,103; mean ≈ $59K; P(>$100K) ≈ 10%
+    rationale: >
+      Informed design choice. Fraud transaction amounts span a wide range
+      but cluster at lower values. LogNormal(9,2) produces median ~$8K with
+      high variance (CV≈7.3), consistent with the empirical observation that
+      most fraud attempts involve moderate amounts while a fat tail captures
+      large-scale schemes [DalPozzolo2018, Altman2023]. PaySim [LopezRojas2016]
+      similarly models fraud amounts with heavy-tailed distributions.
+  jurisdiction:
+    distribution: categorical
+    values: ["US", "EU", "UK", "LATAM", "APAC"]
+    weights: [0.30, 0.20, 0.10, 0.25, 0.15]
+    rationale: >
+      Informed design choice. LATAM overweighted relative to credit_approval
+      to reflect higher fraud incidence in emerging market corridors, consistent
+      with FATF geographic risk assessments [FATF2021]. Non-critical parameter
+      for governance evaluation.
+  customer_tenure_years:
+    distribution: exponential
+    params: {lambda: 0.30}
+    # E[X] = 3.33 years; P(>5yr) ≈ 22%; P(>10yr) ≈ 5%
+    rationale: >
+      Informed design choice. Newer customers are overrepresented in fraud
+      cases — a well-established pattern in banking fraud literature
+      [DalPozzolo2018]. lambda=0.30 gives E[tenure]=3.3 years, roughly half
+      the credit_approval mean, reflecting that fraud disproportionately
+      affects recently onboarded accounts.
+  counterparty_risk:
+    distribution: beta
+    params: {a: 4.0, b: 3.0}
+    # E[X] = 0.571, Var = 0.031, mode = 0.60
+    rationale: >
+      Informed design choice. Fraud cases involve counterparties with
+      elevated risk profiles. Beta(4,3) produces E[cpr]=0.57, reflecting
+      moderate-to-high counterparty risk. This is an informed design choice;
+      no direct empirical calibration is available for this specific variable.
+
+sanctions_screening:
+  risk_score:
+    distribution: beta
+    params: {a: 3.0, b: 3.0}
+    # E[X] = 0.50, Var = 0.036, mode = 0.50
+    # Symmetric, wide range
+    rationale: >
+      Informed design choice. Sanctions screening covers the full spectrum
+      of risk levels — from routine name-matching false positives to genuine
+      sanctions hits. Beta(3,3) is symmetric around 0.50 with moderate
+      variance, reflecting this heterogeneity. The symmetric shape is
+      deliberate: unlike fraud alerts (pre-filtered high-risk) or credit
+      (pre-filtered low-risk), sanctions screening operates on unfiltered
+      transaction flows.
+  completeness:
+    distribution: beta
+    params: {a: 3.0, b: 4.0}
+    # E[X] = 0.429, Var = 0.031, mode = 0.40
+    rationale: >
+      Informed design choice. Cross-border sanctions cases often have
+      information gaps due to multi-jurisdictional data availability and
+      correspondent banking opacity. Beta(3,4) produces E[iota]=0.43,
+      reflecting slightly incomplete case files. FATF [FATF2021] identifies
+      cross-border information gaps as a key challenge in sanctions compliance.
+  flags:
+    probabilities:
+      AML: 0.20
+      KYC: 0.15
+      SANCTIONS: 0.70
+      INSIDER: 0.05
+      CONCENTRATION: 0.08
+    correlation_strength: 0.6
+    rationale: >
+      Informed design choice. SANCTIONS flag at 70% is high by definition
+      (this IS the sanctions screening pipeline). AML at 20% reflects the
+      overlap between sanctions evasion and money laundering [FATF2021].
+      The ~30% of cases without SANCTIONS flag represents routine screening
+      of low-risk names that happen to trigger fuzzy matching — consistent
+      with the ~95% false positive rate in sanctions screening systems
+      [Sardine2024, ComplyStream2024].
+  amount_usd:
+    distribution: lognormal
+    params: {mu: 12.0, sigma: 2.0}
+    # median = exp(12.0) ≈ $162,755; mean ≈ $1.2M; P(>$1M) ≈ 23%
+    rationale: >
+      Informed design choice. Sanctions screening primarily targets
+      cross-border wire transfers and trade finance, which are larger than
+      retail transactions. LogNormal(12,2) produces median ~$163K. The BIS
+      Triennial Survey [BIS2022_Triennial] reports average cross-border
+      payment sizes in the $100K-$500K range for correspondent banking.
+  jurisdiction:
+    distribution: categorical
+    values: ["US", "EU", "UK", "LATAM", "APAC"]
+    weights: [0.20, 0.25, 0.20, 0.20, 0.15]
+    rationale: >
+      Informed design choice. More evenly distributed than credit_approval,
+      reflecting that sanctions screening covers all jurisdictional corridors.
+      Slightly elevated EU weight reflects OFAC/EU sanctions regime overlap.
+  customer_tenure_years:
+    distribution: exponential
+    params: {lambda: 0.20}
+    # E[X] = 5.0 years
+    rationale: >
+      Informed design choice. Mean 5 years; intermediate between credit
+      (long relationships) and fraud (short relationships). Sanctions
+      screening applies across the customer lifecycle without strong
+      tenure bias.
+  counterparty_risk:
+    distribution: beta
+    params: {a: 3.0, b: 2.0}
+    # E[X] = 0.60, Var = 0.040, mode = 0.67
+    rationale: >
+      Informed design choice. Elevated counterparty risk in sanctions
+      context, reflecting that screened counterparties are under scrutiny.
+      Beta(3,2) produces E[cpr]=0.60. No direct empirical calibration;
+      parameter chosen to differentiate from credit_approval (E=0.20) and
+      fraud_alert (E=0.57).
+
+aml_review:
+  risk_score:
+    distribution: beta
+    params: {a: 4.0, b: 3.0}
+    # E[X] = 0.571, Var = 0.035, mode = 0.60
+    rationale: >
+      Informed design choice. AML review cases are pre-filtered by
+      transaction monitoring systems; only cases exceeding alert thresholds
+      reach human review. Beta(4,3) produces E[r]=0.57, skewed
+      moderate-to-high. This reflects that AML review cases are a pre-selected
+      population, but not as extreme as fraud alerts (which are real-time
+      high-urgency). FATF [FATF2021] typologies inform the risk distribution.
+  completeness:
+    distribution: beta
+    params: {a: 3.0, b: 3.0}
+    # E[X] = 0.50, Var = 0.036, mode = 0.50
+    rationale: >
+      Informed design choice. AML reviews have variable completeness:
+      some cases have extensive transaction history and KYC documentation,
+      others are flagged from sparse data. Beta(3,3) produces E[iota]=0.50,
+      a symmetric distribution reflecting this heterogeneity.
+  flags:
+    probabilities:
+      AML: 0.80
+      KYC: 0.30
+      SANCTIONS: 0.20
+      INSIDER: 0.15
+      CONCENTRATION: 0.10
+    correlation_strength: 0.7
+    rationale: >
+      Informed design choice. AML flag at 80% is near-certain by definition
+      (this IS the AML review pipeline). The 20% without AML flag represents
+      cases escalated for other reasons that pass through AML review as a
+      secondary check. KYC at 30% reflects the strong overlap between AML
+      and identity verification concerns [FATF2021]. High correlation
+      strength (0.7) reflects tight coupling between risk level and flag
+      activation in pre-filtered AML populations.
+  amount_usd:
+    distribution: lognormal
+    params: {mu: 10.5, sigma: 1.8}
+    # median = exp(10.5) ≈ $36,315; mean ≈ $173K; P(>$100K) ≈ 20%
+    rationale: >
+      Informed design choice. AML reviews cover a mixed range of
+      transaction sizes. LogNormal(10.5, 1.8) produces median ~$36K,
+      intermediate between fraud (small, ~$8K) and sanctions (large,
+      ~$163K). Consistent with AML transaction monitoring thresholds that
+      operate at moderate amounts [FATF2021, Altman2023].
+  jurisdiction:
+    distribution: categorical
+    values: ["US", "EU", "UK", "LATAM", "APAC"]
+    weights: [0.30, 0.25, 0.15, 0.15, 0.15]
+    rationale: >
+      Informed design choice. Similar to credit_approval, reflecting
+      volume-weighted geographic distribution of banking activity.
+  customer_tenure_years:
+    distribution: exponential
+    params: {lambda: 0.20}
+    # E[X] = 5.0 years
+    rationale: >
+      Informed design choice. Mean 5 years; intermediate tenure
+      reflecting that AML reviews cover both new and established customers.
+  counterparty_risk:
+    distribution: beta
+    params: {a: 3.0, b: 4.0}
+    # E[X] = 0.429, Var = 0.031, mode = 0.40
+    rationale: >
+      Informed design choice. Moderate counterparty risk for AML reviews.
+      Beta(3,4) produces E[cpr]=0.43; lower than fraud/sanctions because
+      AML review is a broader category including lower-risk structural
+      monitoring.
+
+concentration_risk:
+  risk_score:
+    distribution: beta
+    params: {a: 3.0, b: 4.0}
+    # E[X] = 0.429, Var = 0.031, mode = 0.40
+    rationale: >
+      Informed design choice. Concentration risk is structural (portfolio-
+      level) rather than acute (transaction-level). Beta(3,4) produces
+      E[r]=0.43, reflecting moderate risk. Concentration events emerge
+      slowly and are typically identified before they become acute, unlike
+      fraud or sanctions hits. Consistent with the EBA guidelines on
+      concentration risk [EBA2023_Pillar2] which frame it as a portfolio
+      management issue.
+  completeness:
+    distribution: beta
+    params: {a: 4.0, b: 2.0}
+    # E[X] = 0.667, Var = 0.032, mode = 0.75
+    rationale: >
+      Informed design choice. Concentration risk cases are typically
+      well-documented because they involve portfolio-level data that is
+      readily available from internal systems (exposure databases, limit
+      monitoring). Beta(4,2) produces E[iota]=0.67, skewed toward high
+      completeness.
+  flags:
+    probabilities:
+      AML: 0.05
+      KYC: 0.08
+      SANCTIONS: 0.05
+      INSIDER: 0.10
+      CONCENTRATION: 0.75
+    correlation_strength: 0.5
+    rationale: >
+      Informed design choice. CONCENTRATION flag at 75% is high by
+      definition (this IS the concentration risk pipeline). Insider
+      trading at 10% reflects the overlap between concentration positions
+      and potential market manipulation. AML and sanctions flags are low
+      because concentration risk is primarily a prudential (not AML/CFT)
+      concern. Moderate correlation strength (0.5): concentration risk
+      is structural, not strongly modulated by case-level risk score.
+  amount_usd:
+    distribution: lognormal
+    params: {mu: 13.0, sigma: 1.0}
+    # median = exp(13.0) ≈ $442,413; mean ≈ $735K; P(>$1M) ≈ 18%
+    rationale: >
+      Informed design choice. Concentration risk involves large single-name
+      or sector exposures. LogNormal(13, 1.0) produces median ~$442K with
+      moderate variance (CV≈1.3), reflecting that concentration risk cases
+      are consistently large but less variable than fraud or AML amounts.
+      The narrow sigma reflects that concentration breaches occur at the
+      upper end of the exposure distribution. Consistent with Basel III
+      large exposure framework [BCBS_LargeExposures2014].
+  jurisdiction:
+    distribution: categorical
+    values: ["US", "EU", "UK", "LATAM", "APAC"]
+    weights: [0.35, 0.30, 0.15, 0.10, 0.10]
+    rationale: >
+      Informed design choice. US and EU dominate due to the concentration
+      of large corporate exposures in developed markets.
+  customer_tenure_years:
+    distribution: exponential
+    params: {lambda: 0.10}
+    # E[X] = 10.0 years; P(>20yr) ≈ 14%
+    rationale: >
+      Informed design choice. Long mean tenure (10 years) reflects that
+      concentration risk typically involves long-standing, large-exposure
+      relationships (relationship banking). lambda=0.10 gives E[tenure]=10yr,
+      the longest of all transaction types, consistent with the nature of
+      concentrated portfolio positions [Schmittlein1987].
+  counterparty_risk:
+    distribution: beta
+    params: {a: 2.0, b: 5.0}
+    # E[X] = 0.286, Var = 0.026, mode = 0.20
+    rationale: >
+      Informed design choice. Individual counterparty risk is low in
+      concentration cases — the risk is in the aggregate, not per-name.
+      Beta(2,5) produces E[cpr]=0.29. This distinguishes concentration risk
+      (systemic/portfolio-level) from fraud/sanctions risk (entity-level).

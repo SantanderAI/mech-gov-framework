@@ -1,0 +1,48 @@
+# =============================================================================
+# mech_gov — example model configuration
+# =============================================================================
+# Each entry maps a name to a provider plus provider-specific settings. Build a
+# client with:
+#
+#     from mech_gov.llm.registry import load_models_config, create_llm
+#     models = load_models_config("configs/models.example.yaml")
+#     llm = create_llm(models["local"])
+#
+# The framework is vendor-neutral. The default providers below (mock,
+# openai_compatible) need no cloud SDK. AWS Bedrock/SageMaker are OPTIONAL and
+# only work after: pip install mech-gov-framework[bedrock]
+#
+# Never hardcode secrets here. Supply API keys via environment variables.
+# =============================================================================
+
+models:
+  # Offline, deterministic — no network, no credentials. Ideal for tests/demos.
+  mock:
+    provider: mock
+    model_id: mock
+
+  # Any OpenAI-compatible HTTP endpoint: OpenAI, Azure OpenAI, vLLM, Ollama,
+  # Together, LM Studio, or an internal gateway. base_url / model / api_key may
+  # also be provided via MECH_GOV_LLM_BASE_URL / _MODEL / _API_KEY.
+  local:
+    provider: openai_compatible
+    base_url: http://localhost:11434/v1   # e.g. Ollama; change to your endpoint
+    model: llama3.1
+    top_p: 1.0
+    # api_key: provide via the MECH_GOV_LLM_API_KEY environment variable
+
+  openai:
+    provider: openai_compatible
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    top_p: 1.0
+    # api_key: provide via the MECH_GOV_LLM_API_KEY environment variable
+
+  # OPTIONAL cloud backend — requires: pip install mech-gov-framework[bedrock]
+  # Uncomment and set your own model id / region / profile.
+  # bedrock_example:
+  #   provider: bedrock
+  #   model_id: <your-bedrock-model-id>
+  #   region: <your-region>
+  #   # profile_name: <your-aws-profile>   # optional
+  #   top_p: 1.0

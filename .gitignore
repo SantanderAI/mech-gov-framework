@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tooling / caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets / local credentials (never commit these)
+*.env
+.env
+.env.*
+.aws/
+
+# Generated experiment outputs
+results/
+*.jsonl
+
+# Intake provenance (maintainer traceability only — never commit)
+.intake-provenance.local

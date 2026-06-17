@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "mech_gov: Mechanical Governance for LLM Decisions"
+abstract: >-
+  A model-agnostic Python framework for enforcing and measuring governance on
+  LLM decisions in high-stakes settings, contrasting a text-only governance
+  regime (R1) with mechanical enforcement (R2) and an adaptive regime (R3),
+  with governance metrics and a synthetic decision dataset.
+type: software
+authors:
+  - name: "Santander AI Lab"
+version: "0.1.0"
+date-released: "2026-06-12"
+license: Apache-2.0
+repository-code: "https://github.com/SantanderAI/mech-gov-framework"
+url: "https://github.com/SantanderAI/mech-gov-framework"
+keywords:
+  - llm
+  - ai-governance
+  - ai-safety
+  - learning-to-defer
+  - decision-systems
+  - evaluation

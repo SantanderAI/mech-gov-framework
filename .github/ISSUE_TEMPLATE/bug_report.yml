@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a problem with the mech_gov framework or CLI
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please do **not** include any
+        secrets, API keys, internal URLs, or proprietary content in this report.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: When I run R2Mechanical().process_case(...), it ...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps so we can reproduce the issue.
+      placeholder: |
+        1. create_llm({"provider": "mock"})
+        2. R2Mechanical().process_case(case, llm)
+        3. see error `...`
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Release tag or commit SHA you are running.
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: LLM provider
+      description: Which LLM provider were you using?
+      options:
+        - mock (offline default)
+        - callable
+        - openai_compatible
+        - bedrock / sagemaker
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any error output (redact endpoints, keys, and sensitive data).
+      render: shell
