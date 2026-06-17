@@ -1,0 +1,66 @@
+# Copyright (c) 2026 Santander Group
+# SPDX-License-Identifier: Apache-2.0
+#
+# License compliance:
+#   1. Verify every Python source file declares an SPDX-License-Identifier.
+#   2. Verify the runtime dependency tree only uses licenses compatible with
+#      Apache-2.0 (permissive: MIT, BSD, Apache, ISC, PSF, etc.) via pip-licenses.
+
+name: License check
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  spdx-headers:
+    name: SPDX headers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Verify every Python file declares SPDX-License-Identifier
+        run: |
+          missing=0
+          while IFS= read -r f; do
+            if ! head -n 5 "$f" | grep -q "SPDX-License-Identifier:"; then
+              echo "MISSING SPDX header: $f"
+              missing=$((missing + 1))
+            fi
+          done < <(find src tests scripts examples -type f -name "*.py")
+          if [ "$missing" -gt 0 ]; then
+            echo "Found $missing files without SPDX header."
+            exit 1
+          fi
+          echo "OK: all Python files have SPDX headers."
+
+  dependency-licenses:
+    name: Dependency licenses compatible with Apache-2.0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install package + pip-licenses
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pip-licenses
+      - name: Fail on copyleft / incompatible licenses
+        run: |
+          # Allowlist of license families compatible with Apache-2.0
+          # redistribution. GPL/AGPL/LGPL are intentionally excluded.
+          # Includes both classic classifier names and SPDX identifiers /
+          # PEP 639 expressions (e.g. numpy now reports a permissive composite
+          # "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0").
+          pip-licenses --format=plain-vertical \
+            --allow-only="Apache Software License;Apache License 2.0;Apache-2.0;MIT License;MIT;BSD License;BSD-3-Clause;BSD-2-Clause;0BSD;Zlib;CC0-1.0;BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0;ISC License (ISCL);ISC;Python Software Foundation License;PSF-2.0;Mozilla Public License 2.0 (MPL 2.0);MPL-2.0;The Unlicense (Unlicense);Unlicense;Historical Permission Notice and Disclaimer (HPND);HPND" \
+            --ignore-packages mech-gov-framework
