@@ -147,3 +147,44 @@ def detokenize(text: str, token_map: dict[str, str]) -> str:
     for token, original in token_map.items():
         text = text.replace(token, original)
     return text
+
+
+# High-recall residual patterns: deliberately noisy, run over the *redacted*
+# text to catch identifier-shaped leftovers the precise pass missed. Privacy
+# tokens ({{TYPE_N}}) contain no "@" and no >=7-digit run, so they are not
+# counted.
+_RESIDUAL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\d{7,}"),
+    re.compile(r"[^\s@]+@[^\s@]+"),
+)
+
+
+def _count_residual(text: str) -> int:
+    return sum(len(p.findall(text)) for p in _RESIDUAL_PATTERNS)
+
+
+def privacy_gate(
+    text: str,
+    config: PrivacyConfig,
+    recognizer: PiiRecognizer | None = None,
+) -> PrivacyResult:
+    """Minimize PII in ``text`` before the model is consulted.
+
+    Returns a :class:`PrivacyResult`. ``forced_decision`` is ``Decision.DEFER``
+    when residual PII exceeds ``config.max_residual_pii`` or the recognizer
+    fails (fail-closed); otherwise ``None``.
+    """
+    if not config.enabled:
+        return PrivacyResult(redacted_text=text)
+
+    recognizer = recognizer or RegexRecognizer()
+    try:
+        result = scan_and_tokenize(text, config, recognizer)
+    except Exception:
+        # Fail closed: cannot verify minimization -> defer, expose nothing.
+        return PrivacyResult(redacted_text="", forced_decision=Decision.DEFER)
+
+    result.residual_pii = _count_residual(result.redacted_text)
+    if result.residual_pii > config.max_residual_pii:
+        result.forced_decision = Decision.DEFER
+    return result

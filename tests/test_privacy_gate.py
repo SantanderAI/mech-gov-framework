@@ -4,10 +4,12 @@
 
 import pytest
 
+from mech_gov.data.banking_case import Decision
 from mech_gov.governance.primitives.privacy_gate import (
     PrivacyConfig,
     RegexRecognizer,
     detokenize,
+    privacy_gate,
     scan_and_tokenize,
 )
 
@@ -72,3 +74,44 @@ def test_no_pii_passthrough_unchanged():
     assert res.redacted_text == text
     assert res.token_map == {}
     assert res.entities_found == 0
+
+
+class _BoomRecognizer:
+    def recognize(self, text):
+        raise RuntimeError("detector unavailable")
+
+
+def test_gate_passes_clean_prompt():
+    res = privacy_gate("Email jane@bank.com", PrivacyConfig(), RegexRecognizer())
+    assert res.forced_decision is None
+    assert res.residual_pii == 0
+    assert "{{EMAIL_1}}" in res.redacted_text
+
+
+def test_gate_defers_on_residual_over_budget():
+    # 8-digit account number is not a PAN (>=13) / phone / SSN, so the precise
+    # pass misses it; the high-recall residual scan catches it.
+    res = privacy_gate("account 12345678 flagged", PrivacyConfig(), RegexRecognizer())
+    assert res.residual_pii >= 1
+    assert res.forced_decision == Decision.DEFER
+
+
+def test_gate_budget_allows_some_residual():
+    cfg = PrivacyConfig(max_residual_pii=1)
+    res = privacy_gate("account 12345678 flagged", cfg, RegexRecognizer())
+    assert res.forced_decision is None
+
+
+def test_gate_fails_closed_on_recognizer_error():
+    res = privacy_gate("anything", PrivacyConfig(), _BoomRecognizer())
+    assert res.forced_decision == Decision.DEFER
+    assert res.redacted_text == ""
+    assert res.token_map == {}
+
+
+def test_gate_disabled_is_noop():
+    cfg = PrivacyConfig(enabled=False)
+    res = privacy_gate("Email jane@bank.com", cfg, RegexRecognizer())
+    assert res.forced_decision is None
+    assert res.redacted_text == "Email jane@bank.com"
+    assert res.token_map == {}
