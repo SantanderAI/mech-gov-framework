@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `release.yml` — versioned source archive attached to GitHub Releases
   - `.github/dependabot.yml` — monthly Python and GitHub Actions updates
   - README badges, attribution and Citation sections
+- Privacy gate (R2): a pre-LLM governance primitive
+  (`mech_gov.governance.primitives.privacy_gate`) that reversibly tokenizes
+  direct identifiers (EMAIL, PHONE, SSN, PAN, IBAN, IP) before the model is
+  consulted, and mechanically DEFERs a case when residual identifiers exceed a
+  configurable budget or detection fails (fail-closed). Stdlib-only, vendor-
+  neutral, configurable via `PrivacyConfig`; records `privacy_entities_found`
+  and `privacy_residual_pii` counts in `DecisionResult.metadata` (the reversible
+  token map is never persisted). Supports a pluggable `PiiRecognizer`.
 
 ## [0.1.0] - 2026-06-12
 
