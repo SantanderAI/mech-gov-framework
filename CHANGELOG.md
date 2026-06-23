@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configurable budget or detection fails (fail-closed). Stdlib-only, vendor-
   neutral, configurable via `PrivacyConfig`; records `privacy_entities_found`
   and `privacy_residual_pii` counts in `DecisionResult.metadata` (the reversible
-  token map is never persisted). Supports a pluggable `PiiRecognizer`.
+  token map is never persisted). Supports a pluggable `PiiRecognizer`. Ships an
+  offline `examples/privacy_demo.py`.
 
 ## [0.1.0] - 2026-06-12
 
