@@ -24,7 +24,7 @@ from mech_gov.governance.primitives.privacy_gate import (
         ("call 555-123-4567 now", "PHONE"),
         ("card 4111 1111 1111 1111 used", "PAN"),
         ("iban DE89370400440532013000 set", "IBAN"),
-        ("host 192.168.0.1 logged", "IP"),
+        ("host 203.0.113.5 logged", "IP"),
     ],
 )
 def test_regex_recognizer_detects_each_type(text, etype):
