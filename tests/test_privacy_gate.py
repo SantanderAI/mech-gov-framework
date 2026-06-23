@@ -4,7 +4,12 @@
 
 import pytest
 
-from mech_gov.governance.primitives.privacy_gate import RegexRecognizer
+from mech_gov.governance.primitives.privacy_gate import (
+    PrivacyConfig,
+    RegexRecognizer,
+    detokenize,
+    scan_and_tokenize,
+)
 
 
 @pytest.mark.parametrize(
@@ -27,3 +32,43 @@ def test_regex_recognizer_detects_each_type(text, etype):
 
 def test_regex_recognizer_no_pii_returns_empty():
     assert RegexRecognizer().recognize("Risk Score: 0.620, Flags: AML") == []
+
+
+def test_tokenize_replaces_pii_and_is_reversible():
+    cfg = PrivacyConfig()
+    text = "Email jane@bank.com or call 555-123-4567"
+    res = scan_and_tokenize(text, cfg, RegexRecognizer())
+    assert "jane@bank.com" not in res.redacted_text
+    assert "555-123-4567" not in res.redacted_text
+    assert "{{EMAIL_1}}" in res.redacted_text
+    assert "{{PHONE_1}}" in res.redacted_text
+    assert res.entities_found == 2
+    assert detokenize(res.redacted_text, res.token_map) == text
+
+
+def test_tokenize_dedupes_repeated_value_and_numbers_by_first_appearance():
+    cfg = PrivacyConfig()
+    text = "a@x.com and c@y.com and a@x.com"
+    res = scan_and_tokenize(text, cfg, RegexRecognizer())
+    assert res.entities_found == 3
+    assert len(res.token_map) == 2  # a@x.com reused
+    assert res.redacted_text == "{{EMAIL_1}} and {{EMAIL_2}} and {{EMAIL_1}}"
+    assert detokenize(res.redacted_text, res.token_map) == text
+
+
+def test_tokenize_deterministic():
+    cfg = PrivacyConfig()
+    text = "Email jane@bank.com or call 555-123-4567"
+    a = scan_and_tokenize(text, cfg, RegexRecognizer())
+    b = scan_and_tokenize(text, cfg, RegexRecognizer())
+    assert a.redacted_text == b.redacted_text
+    assert a.token_map == b.token_map
+
+
+def test_no_pii_passthrough_unchanged():
+    cfg = PrivacyConfig()
+    text = "Risk Score: 0.620\nRegulatory Flags: AML, KYC"
+    res = scan_and_tokenize(text, cfg, RegexRecognizer())
+    assert res.redacted_text == text
+    assert res.token_map == {}
+    assert res.entities_found == 0
