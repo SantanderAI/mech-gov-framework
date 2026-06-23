@@ -32,6 +32,13 @@ from mech_gov.governance.primitives.hard_gates import (
     evaluate_hard_gates,
 )
 from mech_gov.governance.primitives.i6q import I6QConfig, check_i6q
+from mech_gov.governance.primitives.privacy_gate import (
+    PRIVACY_GATE_ID,
+    PiiRecognizer,
+    PrivacyConfig,
+    RegexRecognizer,
+    privacy_gate,
+)
 from mech_gov.governance.regime import DecisionResult, GovernanceRegime
 from mech_gov.llm.base import LLMInterface
 
@@ -53,6 +60,8 @@ class R2Mechanical(GovernanceRegime):
         n_cefl_candidates: int = 3,
         theta_iota: float = 0.3,
         risk_escalation_threshold: float = 0.7,
+        privacy_config: PrivacyConfig | None = None,
+        privacy_recognizer: PiiRecognizer | None = None,
     ):
         self._system_prompt = load_template(template_name)
         self._gates = build_default_gates(hard_gates_config)
@@ -61,6 +70,8 @@ class R2Mechanical(GovernanceRegime):
         self._n_cefl_candidates = n_cefl_candidates
         self._theta_iota = theta_iota
         self._risk_escalation_threshold = risk_escalation_threshold
+        self._privacy = privacy_config or PrivacyConfig()
+        self._privacy_recognizer = privacy_recognizer or RegexRecognizer()
 
     @property
     def regime_name(self) -> str:
@@ -105,6 +116,42 @@ class R2Mechanical(GovernanceRegime):
             )
 
         # =====================================================================
+        # Step 1b: Privacy gate — minimize PII before the model is consulted
+        # =====================================================================
+        prompt_body = case.to_prompt()
+        if self._privacy.enabled:
+            pr = privacy_gate(prompt_body, self._privacy, self._privacy_recognizer)
+            metadata["privacy_entities_found"] = pr.entities_found
+            metadata["privacy_residual_pii"] = pr.residual_pii
+            if pr.forced_decision is not None:
+                gates_triggered.append(PRIVACY_GATE_ID)
+                metadata["privacy_gate_override"] = True
+                logger.info(
+                    "[R2] %s: privacy gate %s → %s (no model call)",
+                    case.case_id,
+                    PRIVACY_GATE_ID,
+                    pr.forced_decision.value,
+                )
+                rationale = (
+                    "Privacy gate PRIV_0: the case could not be safely minimized "
+                    "(residual direct identifiers above the configured budget), so "
+                    "it was deferred without sending any content to the model."
+                )
+                elapsed_ms = time.perf_counter() * 1000 - start_ms
+                return DecisionResult(
+                    case_id=case.case_id,
+                    regime=self.regime_name,
+                    decision=pr.forced_decision,
+                    rationale=rationale,
+                    deferral_text=rationale,
+                    metadata=metadata,
+                    processing_time_ms=elapsed_ms,
+                    tokens_used=0,
+                    gates_triggered=gates_triggered,
+                )
+            prompt_body = pr.redacted_text
+
+        # =====================================================================
         # Step 2: E3 Entropy — Commit
         # =====================================================================
         commit = e3_commit(entropy_seed)
@@ -117,7 +164,7 @@ class R2Mechanical(GovernanceRegime):
         user_message = (
             "Please evaluate the following banking transaction case and provide "
             "your decision in the required JSON format.\n\n"
-            f"{case.to_prompt()}"
+            f"{prompt_body}"
         )
 
         logger.debug(

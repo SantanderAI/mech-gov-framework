@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the R2 pre-LLM privacy gate (offline, no LLM)."""
 
+import json
+
 import pytest
 
-from mech_gov.data.banking_case import Decision
+from mech_gov.data.banking_case import BankingCase, Decision, TransactionType
 from mech_gov.governance.primitives.privacy_gate import (
     PrivacyConfig,
     RegexRecognizer,
@@ -115,3 +117,91 @@ def test_gate_disabled_is_noop():
     assert res.forced_decision is None
     assert res.redacted_text == "Email jane@bank.com"
     assert res.token_map == {}
+
+
+def _case(**overrides) -> BankingCase:
+    base = dict(
+        case_id="p-0001",
+        transaction_type=TransactionType.CREDIT_APPROVAL,
+        risk_score=0.30,
+        completeness=0.80,
+        regulatory_flags=["KYC"],
+        amount_usd=1_000.0,
+        jurisdiction="US",
+    )
+    base.update(overrides)
+    return BankingCase(**base)
+
+
+def _decision_json(text: str) -> str:
+    return json.dumps(
+        {
+            "decision": "ESCALATE",
+            "rationale": f"Reviewed case material: {text}",
+            "pro_arguments": [
+                "The case shows characteristics that could justify approval under "
+                "standard review conditions and documented controls."
+            ],
+            "con_arguments": [
+                "Insufficient verified information is available to rule out elevated "
+                "regulatory risk for this counterparty at this time."
+            ],
+        }
+    )
+
+
+def test_r2_tokenizes_prompt_before_llm():
+    from mech_gov.governance.r2_mechanical import R2Mechanical
+    from mech_gov.llm.providers.mock import MockLLM
+
+    captured: dict[str, str] = {}
+
+    def responder(system_prompt: str, user_message: str) -> str:
+        captured["user"] = user_message
+        return _decision_json(user_message)
+
+    llm = MockLLM(responder=responder)
+    # jurisdiction is a free-text field rendered into to_prompt().
+    case = _case(jurisdiction="reach jane@bank.com")
+    result = R2Mechanical().process_case(case, llm)
+
+    assert "jane@bank.com" not in captured["user"]
+    assert "{{EMAIL_1}}" in captured["user"]
+    assert result.metadata["privacy_entities_found"] == 1
+    assert result.metadata["privacy_residual_pii"] == 0
+
+
+def test_r2_defers_and_skips_llm_when_residual_pii():
+    from mech_gov.governance.r2_mechanical import R2Mechanical
+    from mech_gov.llm.providers.mock import MockLLM
+
+    calls = {"n": 0}
+
+    def responder(system_prompt: str, user_message: str) -> str:
+        calls["n"] += 1
+        return _decision_json(user_message)
+
+    llm = MockLLM(responder=responder)
+    case = _case(jurisdiction="acct 12345678")  # residual, not tokenizable
+    result = R2Mechanical().process_case(case, llm)
+
+    assert result.decision == Decision.DEFER
+    assert "PRIV_0" in result.gates_triggered
+    assert result.metadata["privacy_gate_override"] is True
+    assert calls["n"] == 0  # LLM never consulted
+
+
+def test_r2_no_raw_pii_in_serialized_result():
+    from mech_gov.governance.r2_mechanical import R2Mechanical
+    from mech_gov.llm.providers.mock import MockLLM
+
+    def responder(system_prompt: str, user_message: str) -> str:
+        return _decision_json(user_message)
+
+    llm = MockLLM(responder=responder)
+    case = _case(jurisdiction="reach jane@bank.com")
+    result = R2Mechanical().process_case(case, llm)
+
+    blob = json.dumps(result.to_dict())
+    assert "jane@bank.com" not in blob
+    assert "{{EMAIL_1}}" in blob  # the token is what was seen and recorded
