@@ -162,7 +162,12 @@ class BedrockLLM(LLMInterface):
         else:
             # All retries exhausted
             logger.error("Bedrock invoke FAILED: all %d retries exhausted", self._max_retries)
-            raise last_exc  # type: ignore[misc]
+            if last_exc is None:
+                raise RuntimeError(
+                    f"Bedrock invoke failed without a captured exception "
+                    f"(max_retries={self._max_retries})"
+                )
+            raise last_exc
 
         elapsed_ms = time.perf_counter() * 1000 - start_ms
 
