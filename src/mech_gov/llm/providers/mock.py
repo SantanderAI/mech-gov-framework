@@ -8,9 +8,11 @@ schema the governance regimes expect, or delegates to a user ``responder``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections.abc import Callable
+from typing import Any
 
 from mech_gov.llm.base import LLMInterface, LLMResponse
 
@@ -69,6 +71,14 @@ class MockLLM(LLMInterface):
     @property
     def provider(self) -> str:
         return "mock"
+
+    def resume_identity_parameters(self) -> dict[str, Any] | None:
+        """Fingerprint the canned responses; a custom ``responder`` is opaque."""
+        if self._responder is not None:
+            return None
+        canned = self._responses if self._responses else [self._response]
+        digest = hashlib.sha256("\0".join(canned).encode("utf-8")).hexdigest()
+        return {"responses_sha256": digest}
 
     def invoke(
         self,

@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from typing import Any
 
 from mech_gov.llm.base import LLMInterface, LLMResponse
 
@@ -89,6 +90,10 @@ class BedrockLLM(LLMInterface):
     @property
     def provider(self) -> str:
         return "bedrock"
+
+    def resume_identity_parameters(self) -> dict[str, Any] | None:
+        """Only ``top_p`` affects results; region, profile and retries do not."""
+        return {"top_p": self._top_p}
 
     def invoke(
         self,

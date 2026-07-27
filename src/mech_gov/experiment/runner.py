@@ -15,12 +15,13 @@ import json
 import logging
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import mech_gov
 from mech_gov.data.banking_case import (
     BankingCase,
     Decision,
@@ -30,6 +31,15 @@ from mech_gov.data.distributions import load_distributions
 from mech_gov.data.generator import generate_dataset
 from mech_gov.data.ground_truth import assign_ground_truth
 from mech_gov.data.stress import apply_stress
+from mech_gov.experiment.identity import (
+    IdentityError,
+    IdentityWarnings,
+    RunIdentity,
+    build_run_identity,
+    canonical_bytes,
+    changed_fields,
+    verified_stored_digest,
+)
 from mech_gov.governance.r1_text_only import R1TextOnly
 from mech_gov.governance.r2_mechanical import R2Mechanical
 from mech_gov.governance.r3_adaptive import R3Adaptive
@@ -97,6 +107,9 @@ class ExperimentResult:
     timestamp: str = ""
     code_version: str = ""
     hyperparameters: dict[str, Any] = field(default_factory=dict)
+    run_label: str = ""
+    identity_sha256: str = ""
+    identity: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -118,6 +131,12 @@ class ExperimentResult:
             d["code_version"] = self.code_version
         if self.hyperparameters:
             d["hyperparameters"] = self.hyperparameters
+        if self.run_label:
+            d["run_label"] = self.run_label
+        if self.identity and self.identity_sha256:
+            d["identity_schema"] = self.identity.get("identity_schema")
+            d["identity_sha256"] = self.identity_sha256
+            d["identity"] = self.identity
         return d
 
 
@@ -134,7 +153,141 @@ def create_regime(regime_name: str, **kwargs) -> GovernanceRegime:
 
 
 def _make_run_id(model: str, regime: str, condition: str, seed: int) -> str:
+    """Build the human-readable run label.
+
+    This string is intentionally coarse: it does **not** decide whether a run
+    has already completed. See :mod:`mech_gov.experiment.identity`.
+    """
     return f"{model}-{regime}-{condition}-seed{seed}"
+
+
+def _package_version() -> str:
+    """Package version used as code provenance inside run identity."""
+    return getattr(mech_gov, "__version__", "") or ""
+
+
+@dataclass
+class _CompletionIndex:
+    """Verified identities and legacy labels found in stored result files."""
+
+    digests: set[str] = field(default_factory=set)
+    canonical: dict[str, bytes] = field(default_factory=dict)
+    conflicts: set[str] = field(default_factory=set)
+    payloads_by_label: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    legacy_labels: set[str] = field(default_factory=set)
+
+    def add(self, record: Mapping[str, Any], warnings: IdentityWarnings) -> None:
+        """Index one stored record, warning instead of trusting bad identities."""
+        label = record.get("run_label") or record.get("run_id") or ""
+        if not isinstance(label, str):
+            return
+        digest, code = verified_stored_digest(record)
+        if code is not None:
+            warnings.emit(code, label)
+            return
+        if digest is None:
+            if label:  # legacy record: readable label only, never an identity
+                self.legacy_labels.add(label)
+            return
+        blob = canonical_bytes(record["identity"])
+        if digest in self.digests:
+            # Defensive: verified digests bind their payload, so a mismatch here
+            # means validation was bypassed. Duplicate copies are not conflicts.
+            if self.canonical[digest] != blob:
+                self.conflicts.add(digest)
+                warnings.emit("MGI005", label)
+            return
+        self.digests.add(digest)
+        self.canonical[digest] = blob
+        self.payloads_by_label.setdefault(label, []).append(dict(record["identity"]))
+
+
+def _result_files(results_dir: Path) -> Iterator[Path]:
+    """Yield the legacy flat JSONL files and the per-model ones."""
+    yield from results_dir.glob("*.jsonl")
+    for subdir in results_dir.iterdir():
+        if subdir.is_dir():
+            yield from subdir.glob("*.jsonl")
+
+
+def _scan_completion_index(results_dir: Path, warnings: IdentityWarnings) -> _CompletionIndex:
+    """Build the completion index, tolerating malformed JSONL lines."""
+    index = _CompletionIndex()
+    for path in _result_files(results_dir):
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, Mapping):
+                    index.add(record, warnings)
+    return index
+
+
+def _resolve_identity(
+    config: RunConfig,
+    llm: LLMInterface,
+    label: str,
+    dist_config: Mapping[str, Any],
+    warnings: IdentityWarnings,
+) -> RunIdentity | None:
+    """Build the versioned identity, or return None when the run is non-resumable."""
+    try:
+        model_id = llm.model_id
+    except Exception:
+        model_id = ""
+    getter = getattr(llm, "resume_identity_parameters", None)
+    parameters = getter() if callable(getter) else None
+    if not model_id or parameters is None:
+        warnings.emit("MGI006", label)
+        return None
+    version = _package_version()
+    if not version:
+        warnings.emit("MGI007", label)
+        return None
+    try:
+        return build_run_identity(
+            label=label,
+            model_name=config.model_name,
+            model_id=model_id,
+            regime_name=config.regime_name,
+            condition=config.condition,
+            seed=config.seed,
+            cases_per_condition=config.cases_per_condition,
+            distributions_config=dist_config,
+            provider_parameters=parameters,
+            package_version=version,
+        )
+    except IdentityError:
+        warnings.emit("MGI006", label)
+        return None
+
+
+def _decide_skip(
+    identity: RunIdentity | None,
+    label: str,
+    index: _CompletionIndex,
+    warnings: IdentityWarnings,
+) -> bool:
+    """Decide whether a requested run may be treated as already completed."""
+    if identity is None:
+        return False
+    if identity.digest in index.conflicts:
+        warnings.emit("MGI005", label)
+        return False
+    if identity.digest in index.digests:
+        return True
+    stored = index.payloads_by_label.get(label)
+    if stored:
+        differing = {name for prior in stored for name in changed_fields(identity.payload, prior)}
+        warnings.emit("MGI002", label, sorted(differing))
+    elif label in index.legacy_labels:
+        warnings.emit("MGI001", label)
+    return False
 
 
 class ExperimentRunner:
@@ -157,33 +310,25 @@ class ExperimentRunner:
         self._dist_config_path = distributions_config_path
         self._on_run_complete = on_run_complete
 
-    def _completed_run_ids(self) -> set:
-        """Scan results dir (and model subdirs) for already-completed run IDs."""
-        completed = set()
-        # Scan flat JSONL files in results_dir (legacy)
-        for jsonl_file in self._results_dir.glob("*.jsonl"):
-            completed.update(self._scan_jsonl(jsonl_file))
-        # Scan model subdirectories
-        for subdir in self._results_dir.iterdir():
-            if subdir.is_dir():
-                for jsonl_file in subdir.glob("*.jsonl"):
-                    completed.update(self._scan_jsonl(jsonl_file))
-        return completed
+    def _completion_index(self, warnings: IdentityWarnings) -> _CompletionIndex:
+        """Scan results dir (and model subdirs) for verified completed identities."""
+        return _scan_completion_index(self._results_dir, warnings)
 
-    @staticmethod
-    def _scan_jsonl(path: Path) -> set:
-        """Extract run_ids from a JSONL file."""
-        ids = set()
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ids.add(json.loads(line).get("run_id", ""))
-                except json.JSONDecodeError:
-                    continue
-        return ids
+    def _prepare_run(
+        self,
+        config: RunConfig,
+        llm: LLMInterface,
+        label: str,
+        skip_completed: bool,
+    ) -> tuple[dict[str, Any], RunIdentity | None, bool]:
+        """Resolve identity inputs before the completion check and decide on skipping."""
+        dist_config = load_distributions(config.distributions_config_path)
+        warnings = IdentityWarnings()
+        identity = _resolve_identity(config, llm, label, dist_config, warnings)
+        skip = skip_completed and _decide_skip(
+            identity, label, self._completion_index(warnings), warnings
+        )
+        return dist_config, identity, skip
 
     def _save_result(self, result: ExperimentResult, filename: str = "baseline.jsonl"):
         """Append a single run result to model-specific JSONL + legacy flat file."""
@@ -393,14 +538,16 @@ class ExperimentRunner:
         Returns:
             ExperimentResult or None if skipped
         """
-        run_id = _make_run_id(
+        label = _make_run_id(
             config.model_name,
             config.regime_name,
             config.condition,
             config.seed,
         )
 
-        if skip_completed and run_id in self._completed_run_ids():
+        dist_config, identity, skip = self._prepare_run(config, llm, label, skip_completed)
+        run_id = identity.run_id if identity is not None else label
+        if skip:
             logger.info("SKIP %s (already completed)", run_id)
             return None
 
@@ -413,8 +560,6 @@ class ExperimentRunner:
             config.cases_per_condition,
         )
 
-        # Generate dataset
-        dist_config = load_distributions(config.distributions_config_path)
         try:
             condition_enum = StressCondition(config.condition)
         except ValueError:
@@ -472,6 +617,9 @@ class ExperimentRunner:
             model_id=llm_model_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
             code_version=_get_code_version(),
+            run_label=label,
+            identity_sha256=identity.digest if identity is not None else "",
+            identity=dict(identity.payload) if identity is not None else {},
         )
 
         self._save_result(result)

@@ -20,6 +20,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from typing import Any
 
 from mech_gov.llm.base import LLMInterface, LLMResponse
 
@@ -61,6 +62,10 @@ class OpenAICompatibleLLM(LLMInterface):
     @property
     def provider(self) -> str:
         return "openai_compatible"
+
+    def resume_identity_parameters(self) -> dict[str, Any] | None:
+        """Only ``top_p`` affects results; base URL, key, path and timeout do not."""
+        return {"top_p": self._top_p}
 
     def invoke(
         self,

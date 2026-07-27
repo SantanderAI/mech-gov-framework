@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import Any
 
 from mech_gov.llm.base import LLMInterface, LLMResponse
 
@@ -81,6 +82,10 @@ class SageMakerLLM(LLMInterface):
     @property
     def provider(self) -> str:
         return "sagemaker"
+
+    def resume_identity_parameters(self) -> dict[str, Any] | None:
+        """Only ``top_p`` affects results; the endpoint is already in ``model_id``."""
+        return {"top_p": self._top_p}
 
     def invoke(
         self,

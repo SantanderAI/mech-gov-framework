@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -63,3 +64,19 @@ class LLMInterface(ABC):
     def provider(self) -> str:
         """Return the provider name (e.g. 'bedrock', 'sagemaker')."""
         return "unknown"
+
+    def resume_identity_parameters(self) -> dict[str, Any] | None:
+        """Return generation parameters that must take part in run identity.
+
+        The experiment runner uses this to decide whether a previously stored
+        run is really equivalent to the one being requested. Return a mapping of
+        allowlisted, public, result-affecting values — never an API key, base
+        URL, credential, profile name, endpoint, timeout, or path. Opaque values
+        such as user-supplied callables cannot be fingerprinted; return ``None``
+        for them.
+
+        ``None`` (the default, so existing subclasses keep working unchanged)
+        means the provider cannot prove equivalence. Such runs are treated as
+        non-resumable: they always execute instead of being skipped.
+        """
+        return None

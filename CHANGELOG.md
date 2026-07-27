@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Experiment resume no longer skips materially different runs. `run_id` was
+  derived only from model alias, regime, condition and seed, so changing the
+  case count (or the resolved model, the distributions config, or provider
+  parameters) produced the same identifier and `skip_completed=True` treated the
+  new experiment as already completed.
+
 ### Added
+- `mech_gov.experiment.identity` — deterministic, versioned run identity. A
+  readable `run_label` is now separate from an `identity_sha256` digest computed
+  over a canonical, allowlisted payload (case count, regime, condition, seed,
+  hashed model ID, semantic distributions fingerprint, provider parameters,
+  package version). Only the full digest decides resume.
+- `LLMInterface.resume_identity_parameters()` — optional hook for providers to
+  declare generation-affecting parameters. The default returns `None`, so
+  existing custom providers are unaffected and are treated as non-resumable.
+  Implemented for the bundled mock, OpenAI-compatible, Bedrock and SageMaker
+  providers.
+- Results now include `run_label`, `identity_schema`, `identity_sha256` and
+  `identity` alongside the existing fields.
+- Stable identity warning codes `MGI001`–`MGI007` on the
+  `mech_gov.experiment.identity` logger. Diagnostics name the fields that
+  differ and never print their values.
+- README section documenting resume semantics, non-resumable runs and legacy
+  result files.
+
+### Changed
+- `run_id` is now `<run_label>--<12 hex>` for resumable runs. It remains an
+  opaque string prefixed by the previous readable label; non-resumable runs keep
+  the bare label.
+- Runs whose identity cannot be established (no stable model ID, undeclared
+  provider parameters, missing package version) always execute rather than
+  risking a wrong skip.
+- Legacy records without identity metadata are read, never rewritten, and never
+  treated as equivalent to a versioned identity.
+- The distributions configuration is loaded before the completion check, since
+  its content participates in run identity.
+
 - Open-source readiness scaffolding:
   - Apache 2.0 `NOTICE`, expanded `CONTRIBUTING.md` (CLA + issue/PR flow),
     `CODE_OF_CONDUCT.md`, `SECURITY.md`, `CODEOWNERS`

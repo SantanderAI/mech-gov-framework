@@ -138,6 +138,66 @@ mech_gov_framework/
 └── tests/                  # offline tests (mock provider)
 ```
 
+## Experiment resume and run identity
+
+`ExperimentRunner` is resumable: re-running an experiment skips work that is
+already on disk. Each result therefore carries two different things.
+
+| Field | Purpose |
+|---|---|
+| `run_label` | Readable name, e.g. `mock-R2-S0-seed42`. Never decides resume. |
+| `identity_sha256` | Full SHA-256 over the canonical identity payload. **Decides resume.** |
+| `identity` | The canonical payload itself, so the digest is reproducible. |
+| `run_id` | `run_label` plus the first 12 digest characters, for display and paths. |
+
+A run is skipped **only** when a stored record carries the exact same verified
+`identity_sha256`. The identity covers the case count, regime, condition, seed,
+a digest of the resolved model ID, a digest of the *loaded* distributions
+configuration, the provider's declared generation parameters, and the package
+version. Changing any of them re-runs the experiment instead of silently
+reusing an older result.
+
+The distributions fingerprint is taken from the parsed configuration, not the
+file bytes, so reformatting or editing comments does not invalidate previous
+runs, while a changed parameter does. Equivalent content at a different path
+fingerprints identically.
+
+### Non-resumable runs
+
+Some runs cannot prove equivalence. They always execute, and log why:
+
+- the provider cannot expose a stable, non-empty `model_id`;
+- the provider does not declare its generation parameters (see below);
+- the package version is unavailable.
+
+Failing open is deliberate: recomputing a run costs time, whereas wrongly
+skipping one silently corrupts a result set.
+
+### Declaring provider parameters
+
+`LLMInterface.resume_identity_parameters()` returns the generation-affecting
+values a provider wants included in run identity, or `None`. The base
+implementation returns `None`, so existing custom providers keep working and are
+simply treated as non-resumable. Return only public, result-affecting values —
+never an API key, base URL, credential, profile name, endpoint, timeout or path.
+
+```python
+class MyProvider(LLMInterface):
+    def resume_identity_parameters(self):
+        return {"top_p": self._top_p}
+```
+
+### Legacy result files
+
+Records written before versioned identity carry a `run_id` and nothing else.
+They are never treated as equivalent to a versioned identity: a matching
+readable label logs `MGI001` and the run executes again. Existing files are read
+but never rewritten or deleted.
+
+Identity and resume warnings use the `mech_gov.experiment.identity` logger with
+stable codes `MGI001`–`MGI007`. They name the configuration fields that differ
+but never print their values.
+
 ## CLI
 
 ```bash
