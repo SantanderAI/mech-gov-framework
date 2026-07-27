@@ -148,14 +148,20 @@ already on disk. Each result therefore carries two different things.
 | `run_label` | Readable name, e.g. `mock-R2-S0-seed42`. Never decides resume. |
 | `identity_sha256` | Full SHA-256 over the canonical identity payload. **Decides resume.** |
 | `identity` | The canonical payload itself, so the digest is reproducible. |
-| `run_id` | `run_label` plus the first 12 digest characters, for display and paths. |
+| `identity_schema` | Version of the canonical identity contract. |
+| `run_id` | The previous readable identifier, unchanged for compatibility. |
 
 A run is skipped **only** when a stored record carries the exact same verified
 `identity_sha256`. The identity covers the case count, regime, condition, seed,
 a digest of the resolved model ID, a digest of the *loaded* distributions
-configuration, the provider's declared generation parameters, and the package
-version. Changing any of them re-runs the experiment instead of silently
-reusing an older result.
+configuration, the provider's declared adapter/deployment fingerprint and
+generation parameters, and the package version. Changing any of them re-runs
+the experiment instead of silently reusing an older result.
+
+`run_label` is present on every new result. `identity_schema`,
+`identity_sha256`, and `identity` are present only when all required identity
+producers are available; a non-resumable result retains the legacy `run_id`
+without claiming a machine identity.
 
 The distributions fingerprint is taken from the parsed configuration, not the
 file bytes, so reformatting or editing comments does not invalidate previous
@@ -167,32 +173,54 @@ fingerprints identically.
 Some runs cannot prove equivalence. They always execute, and log why:
 
 - the provider cannot expose a stable, non-empty `model_id`;
-- the provider does not declare its generation parameters (see below);
+- the provider cannot declare its adapter/deployment identity and generation
+  parameters (see below);
 - the package version is unavailable.
 
 Failing open is deliberate: recomputing a run costs time, whereas wrongly
 skipping one silently corrupts a result set.
 
+Code provenance is bounded to the package version. Source edits made without a
+version change are intentionally outside this identity contract; use
+`skip_completed=False` while iterating on an editable checkout.
+
 ### Declaring provider parameters
 
-`LLMInterface.resume_identity_parameters()` returns the generation-affecting
-values a provider wants included in run identity, or `None`. The base
-implementation returns `None`, so existing custom providers keep working and are
-simply treated as non-resumable. Return only public, result-affecting values —
-never an API key, base URL, credential, profile name, endpoint, timeout or path.
+`LLMInterface.resume_identity_parameters()` returns an allowlisted adapter
+identifier, privacy-safe deployment fingerprint, and generation-affecting
+values, or `None`. The base implementation returns `None`, so existing custom
+providers remain API-compatible but always execute until they declare a stable
+identity. The bundled callable and SageMaker providers are non-resumable:
+arbitrary callables are opaque, and an endpoint name plus region does not prove
+which account-scoped SageMaker deployment is selected.
+
+Return only public values and privacy-safe fingerprints — never an API key,
+credential, raw private URL, profile name, endpoint, timeout, or path.
 
 ```python
 class MyProvider(LLMInterface):
     def resume_identity_parameters(self):
-        return {"top_p": self._top_p}
+        return {
+            "provider": "my_provider",
+            "deployment_sha256": self._safe_deployment_fingerprint,
+            "top_p": self._top_p,
+        }
 ```
+
+SHA-256 fingerprints prevent raw identifiers from appearing in the identity
+payload; they are pseudonymous identifiers, not encryption. Use non-secret,
+stable model and deployment identifiers. For backward compatibility, the
+existing raw `model_id` fields in results and manifests are unchanged.
+The readable model alias remains in `run_id`, `run_label`, and `identity` as
+public metadata; do not put credentials or private identifiers in aliases.
 
 ### Legacy result files
 
 Records written before versioned identity carry a `run_id` and nothing else.
 They are never treated as equivalent to a versioned identity: a matching
 readable label logs `MGI001` and the run executes again. Existing files are read
-but never rewritten or deleted.
+but never rewritten or deleted. The first post-upgrade sweep can therefore
+repeat legacy provider calls and incur their normal cost.
 
 Identity and resume warnings use the `mech_gov.experiment.identity` logger with
 stable codes `MGI001`–`MGI007`. They name the configuration fields that differ

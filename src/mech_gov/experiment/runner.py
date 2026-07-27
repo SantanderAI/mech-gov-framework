@@ -32,7 +32,6 @@ from mech_gov.data.generator import generate_dataset
 from mech_gov.data.ground_truth import assign_ground_truth
 from mech_gov.data.stress import apply_stress
 from mech_gov.experiment.identity import (
-    IdentityError,
     IdentityWarnings,
     RunIdentity,
     build_run_identity,
@@ -175,19 +174,21 @@ class _CompletionIndex:
     conflicts: set[str] = field(default_factory=set)
     payloads_by_label: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     legacy_labels: set[str] = field(default_factory=set)
+    invalid_labels: set[str] = field(default_factory=set)
+    scan_failed: bool = False
 
     def add(self, record: Mapping[str, Any], warnings: IdentityWarnings) -> None:
         """Index one stored record, warning instead of trusting bad identities."""
         label = record.get("run_label") or record.get("run_id") or ""
-        if not isinstance(label, str):
+        if not isinstance(label, str) or not label:
             return
         digest, code = verified_stored_digest(record)
         if code is not None:
+            self.invalid_labels.add(label)
             warnings.emit(code, label)
             return
         if digest is None:
-            if label:  # legacy record: readable label only, never an identity
-                self.legacy_labels.add(label)
+            self.legacy_labels.add(label)
             return
         blob = canonical_bytes(record["identity"])
         if digest in self.digests:
@@ -213,18 +214,38 @@ def _result_files(results_dir: Path) -> Iterator[Path]:
 def _scan_completion_index(results_dir: Path, warnings: IdentityWarnings) -> _CompletionIndex:
     """Build the completion index, tolerating malformed JSONL lines."""
     index = _CompletionIndex()
-    for path in _result_files(results_dir):
-        with open(path, encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(record, Mapping):
-                    index.add(record, warnings)
+    try:
+        paths = list(_result_files(results_dir))
+    except OSError:
+        index.scan_failed = True
+        warnings.emit("MGI004", "<results-dir>")
+        return index
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, RecursionError):
+                        continue
+                    if not isinstance(record, Mapping):
+                        continue
+                    try:
+                        index.add(record, warnings)
+                    except Exception:
+                        label = record.get("run_label") or record.get("run_id")
+                        if isinstance(label, str) and label:
+                            index.invalid_labels.add(label)
+                            warnings.emit("MGI004", label)
+                        else:
+                            index.scan_failed = True
+                            warnings.emit("MGI004", str(path))
+        except (OSError, UnicodeError):
+            index.scan_failed = True
+            warnings.emit("MGI004", str(path))
     return index
 
 
@@ -238,11 +259,12 @@ def _resolve_identity(
     """Build the versioned identity, or return None when the run is non-resumable."""
     try:
         model_id = llm.model_id
+        getter = getattr(llm, "resume_identity_parameters", None)
+        parameters = getter() if callable(getter) else None
     except Exception:
         model_id = ""
-    getter = getattr(llm, "resume_identity_parameters", None)
-    parameters = getter() if callable(getter) else None
-    if not model_id or parameters is None:
+        parameters = None
+    if not isinstance(model_id, str) or not model_id or not isinstance(parameters, Mapping):
         warnings.emit("MGI006", label)
         return None
     version = _package_version()
@@ -262,7 +284,7 @@ def _resolve_identity(
             provider_parameters=parameters,
             package_version=version,
         )
-    except IdentityError:
+    except Exception:
         warnings.emit("MGI006", label)
         return None
 
@@ -275,6 +297,8 @@ def _decide_skip(
 ) -> bool:
     """Decide whether a requested run may be treated as already completed."""
     if identity is None:
+        return False
+    if index.scan_failed or label in index.invalid_labels:
         return False
     if identity.digest in index.conflicts:
         warnings.emit("MGI005", label)
@@ -533,7 +557,9 @@ class ExperimentRunner:
         Args:
             config: Run configuration
             llm: LLM interface
-            skip_completed: If True, skip if run_id already in results
+            skip_completed: If True, skip only when a stored, verified machine
+                identity exactly matches the current run. Legacy run labels do
+                not establish completion.
 
         Returns:
             ExperimentResult or None if skipped
@@ -546,7 +572,7 @@ class ExperimentRunner:
         )
 
         dist_config, identity, skip = self._prepare_run(config, llm, label, skip_completed)
-        run_id = identity.run_id if identity is not None else label
+        run_id = label
         if skip:
             logger.info("SKIP %s (already completed)", run_id)
             return None

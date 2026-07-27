@@ -11,7 +11,6 @@ import logging
 import pytest
 
 from mech_gov.experiment.identity import (
-    DISPLAY_DIGEST_LENGTH,
     PAYLOAD_FIELDS,
     IdentityError,
     IdentityWarnings,
@@ -46,17 +45,32 @@ def identity(**overrides):
 # --------------------------------------------------------------------------
 
 
-def test_run_id_is_label_plus_truncated_digest():
+def test_label_and_authoritative_digest_are_separate():
     ident = identity()
     assert ident.label == "mock-R2-S0-seed42"
     assert len(ident.digest) == 64
-    assert ident.run_id == f"mock-R2-S0-seed42--{ident.digest[:DISPLAY_DIGEST_LENGTH]}"
-    # The display suffix is strictly shorter than the authoritative digest.
-    assert len(ident.run_id.split("--")[1]) < len(ident.digest)
 
 
 def test_identity_is_deterministic_across_instances():
     assert identity().digest == identity().digest
+
+
+def test_schema_one_has_a_pinned_canonical_vector():
+    expected = (
+        '{"cases_per_condition":"n:1E+1","condition":"s:S0",'
+        '"distributions_sha256":"s:e0c57a20148c66a32df79a41b725c4fbf2525e30e585890b2bf9b65ed449367f",'
+        '"identity_schema":"n:1",'
+        '"model_id_sha256":"s:f0cb9b49bc405836585ef9d6785501b0685241788111424e03fba0f5d55e06b6",'
+        '"model_name":"s:mock","package_version":"s:0.1.0",'
+        '"provider_parameters":{"top_p":"n:1"},"regime_name":"s:R2","seed":"n:42"}'
+    )
+    ident = identity()
+    assert canonical_bytes(ident.payload) == expected.encode("utf-8")
+    expected_digest = (
+        "a5e7a917d45ead0077a43eacd286a96d"  # pragma: allowlist secret
+        "2c30110d97dee330e1bb12dcc76108cd"  # pragma: allowlist secret
+    )
+    assert ident.digest == expected_digest
 
 
 def test_payload_carries_exactly_the_declared_fields():
@@ -158,7 +172,7 @@ def test_empty_configuration_still_fingerprints():
 # --------------------------------------------------------------------------
 
 
-def test_raw_model_id_is_hashed_never_stored():
+def test_raw_model_id_is_hashed_never_stored_in_identity():
     ident = identity(model_id="arn:aws:bedrock:eu-west-1::secret-deployment")
     serialized = json.dumps(ident.payload)
     assert "arn:aws" not in serialized
@@ -183,7 +197,7 @@ def stored_record(ident=None):
     return json.loads(
         json.dumps(
             {
-                "run_id": ident.run_id,
+                "run_id": ident.label,
                 "run_label": ident.label,
                 "identity_schema": 1,
                 "identity_sha256": ident.digest,
@@ -202,12 +216,15 @@ def test_legacy_record_reports_no_identity_and_no_warning():
     assert verified_stored_digest({"run_id": "mock-R2-S0-seed42"}) == (None, None)
 
 
-@pytest.mark.parametrize("schema", [99, 0, "1", True, None])
-def test_unsupported_schema_is_refused(schema):
+@pytest.mark.parametrize(
+    "schema, expected_code",
+    [(99, "MGI003"), (0, "MGI003"), ("1", "MGI003"), (True, "MGI003"), (None, "MGI003")],
+)
+def test_unsupported_schema_is_refused(schema, expected_code):
     record = stored_record()
     record["identity_schema"] = schema
     digest, code = verified_stored_digest(record)
-    assert digest is None and code in {"MGI003", "MGI004"}
+    assert digest is None and code == expected_code
 
 
 @pytest.mark.parametrize("digest", ["", "xyz", "A" * 64, "a" * 63, 12345])
@@ -272,6 +289,11 @@ def test_changed_fields_reports_sorted_names_only():
 
 def test_changed_fields_is_empty_for_equal_payloads():
     assert changed_fields(identity().payload, identity().payload) == []
+
+
+def test_changed_fields_uses_canonical_not_python_equality():
+    assert changed_fields({"value": True}, {"value": 1}) == ["value"]
+    assert changed_fields({"value": (1, 2)}, {"value": [1.0, 2.0]}) == []
 
 
 def test_warning_names_fields_but_never_values(caplog):

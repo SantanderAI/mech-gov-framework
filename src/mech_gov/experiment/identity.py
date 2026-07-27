@@ -10,13 +10,15 @@ a label, and the second one can be skipped silently.
 
 This module separates the two concerns: ``label`` stays the legacy readable
 string, while ``digest`` is a SHA-256 over a versioned, allowlisted canonical
-payload. Only the full digest decides equality — the truncated digest embedded
-in ``run_id`` exists for display and filesystem convenience.
+payload. Only the full digest decides equality. The existing result ``run_id``
+remains the readable label for compatibility; no truncated display value takes
+part in resume decisions.
 
 The module is deliberately inert. It never reads environment variables, never
 touches the filesystem, never invokes a model, and never accepts raw provider
-configuration. Callers pass already-resolved, allowlisted values, so no secret,
-endpoint, prompt, case, or path can reach an identity payload or a log line.
+configuration. Built-in callers pass already-resolved, allowlisted values.
+Third-party providers must obey the
+``LLMInterface.resume_identity_parameters()`` privacy contract.
 """
 
 from __future__ import annotations
@@ -38,9 +40,6 @@ IDENTITY_SCHEMA = 1
 
 #: Payload versions this build is able to verify.
 SUPPORTED_IDENTITY_SCHEMAS = frozenset({IDENTITY_SCHEMA})
-
-#: Hex characters of the digest shown in ``run_id``. Display only.
-DISPLAY_DIGEST_LENGTH = 12
 
 #: Exact set of keys a schema-1 payload must contain.
 PAYLOAD_FIELDS = frozenset(
@@ -147,11 +146,6 @@ class RunIdentity:
     payload: dict[str, Any]
     digest: str
 
-    @property
-    def run_id(self) -> str:
-        """Readable label plus a truncated digest. Never used for equality."""
-        return f"{self.label}--{self.digest[:DISPLAY_DIGEST_LENGTH]}"
-
 
 def build_run_identity(
     *,
@@ -215,7 +209,7 @@ def verified_stored_digest(record: Mapping[str, Any]) -> tuple[str | None, str |
         return None, "MGI004"
     try:
         recomputed = digest_payload(payload)
-    except IdentityError:
+    except Exception:
         return None, "MGI004"
     return (stored, None) if recomputed == stored else (None, "MGI004")
 
@@ -223,7 +217,13 @@ def verified_stored_digest(record: Mapping[str, Any]) -> tuple[str | None, str |
 def changed_fields(current: Mapping[str, Any], stored: Mapping[str, Any]) -> list[str]:
     """Return the sorted names of payload fields that differ. Never the values."""
     names = set(current) | set(stored)
-    return sorted(name for name in names if current.get(name) != stored.get(name))
+    return sorted(
+        name
+        for name in names
+        if name not in current
+        or name not in stored
+        or canonical_bytes({"value": current[name]}) != canonical_bytes({"value": stored[name]})
+    )
 
 
 class IdentityWarnings:

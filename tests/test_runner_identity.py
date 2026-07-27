@@ -21,6 +21,7 @@ from mech_gov.experiment.runner import (
     _resolve_identity,
 )
 from mech_gov.llm.providers.mock import MockLLM
+from mech_gov.llm.providers.openai_compatible import OpenAICompatibleLLM
 from mech_gov.llm.registry import create_llm
 
 N = 5  # smallest count the generator accepts: one case per transaction type
@@ -51,7 +52,8 @@ def _codes(caplog):
 
 def _write_dist(tmp_path, mutate=None, name="dist.yaml"):
     """Copy the bundled distributions config, optionally changing one number."""
-    loaded = yaml.safe_load(open(_DEFAULT_DIST_CONFIG, encoding="utf-8"))
+    with open(_DEFAULT_DIST_CONFIG, encoding="utf-8") as handle:
+        loaded = yaml.safe_load(handle)
     if mutate is not None:
         mutate(loaded)
     path = tmp_path / name
@@ -125,6 +127,39 @@ def test_changed_provider_parameters_execute(tmp_path):
     assert second is not None
 
 
+def test_mock_response_fingerprint_is_length_unambiguous():
+    left = MockLLM(responses=["a\0b", "c"]).resume_identity_parameters()
+    right = MockLLM(responses=["a", "b\0c"]).resume_identity_parameters()
+    assert left != right
+
+
+def test_openai_compatible_endpoint_changes_identity():
+    first = OpenAICompatibleLLM(base_url="https://one.example/v1", model="shared-model")
+    second = OpenAICompatibleLLM(base_url="https://two.example/v1", model="shared-model")
+    warnings = IdentityWarnings()
+    first_identity = _resolve_identity(_cfg(), first, "label", {}, warnings)
+    second_identity = _resolve_identity(_cfg(), second, "label", {}, warnings)
+    assert first_identity is not None and second_identity is not None
+    assert first_identity.digest != second_identity.digest
+    assert "one.example" not in json.dumps(first_identity.payload)
+    assert "two.example" not in json.dumps(second_identity.payload)
+
+
+def test_openai_compatible_default_port_is_semantically_stable():
+    implicit = OpenAICompatibleLLM(base_url="https://example.test/v1", model="model")
+    explicit = OpenAICompatibleLLM(base_url="https://example.test:443/v1", model="model")
+    assert implicit.resume_identity_parameters() == explicit.resume_identity_parameters()
+
+
+def test_openai_compatible_credentialed_endpoint_is_non_resumable():
+    llm = OpenAICompatibleLLM(
+        base_url="https://user:secret@example.test/v1",  # pragma: allowlist secret
+        api_key="sk-secret",  # pragma: allowlist secret
+        model="model",
+    )
+    assert llm.resume_identity_parameters() is None
+
+
 # --------------------------------------------------------------------------
 # Non-resumable inputs
 # --------------------------------------------------------------------------
@@ -141,7 +176,7 @@ def test_opaque_provider_is_non_resumable(tmp_path, caplog):
 
     assert first is not None and second is not None  # never skipped
     assert first.identity == {} and first.identity_sha256 == ""
-    assert first.run_id == first.run_label  # no digest suffix without identity
+    assert first.run_id == first.run_label
     assert "MGI006" in _codes(caplog)
 
 
@@ -168,6 +203,32 @@ def test_unresolvable_provider_parameters_are_non_resumable(tmp_path, caplog):
         result = runner.run_single(_cfg(), _BadParams(), skip_completed=True)
     assert result is not None and result.identity_sha256 == ""
     assert "MGI006" in _codes(caplog)
+
+
+@pytest.mark.parametrize("bad_parameters", [["not-a-pair"], "not-a-mapping", 42])
+def test_invalid_provider_parameter_types_are_non_resumable(tmp_path, caplog, bad_parameters):
+    class _BadParams(MockLLM):
+        def resume_identity_parameters(self):
+            return bad_parameters
+
+    runner = ExperimentRunner(results_dir=str(tmp_path))
+    with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
+        result = runner.run_single(_cfg(), _BadParams(), skip_completed=True)
+    assert result is not None and result.identity_sha256 == ""
+    assert "MGI006" in _codes(caplog)
+
+
+def test_provider_identity_hook_exception_is_non_resumable(tmp_path, caplog):
+    class _RaisingParams(MockLLM):
+        def resume_identity_parameters(self):
+            raise RuntimeError("secret exception detail")
+
+    runner = ExperimentRunner(results_dir=str(tmp_path))
+    with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
+        result = runner.run_single(_cfg(), _RaisingParams(), skip_completed=True)
+    assert result is not None and result.identity_sha256 == ""
+    assert "MGI006" in _codes(caplog)
+    assert "secret exception detail" not in caplog.text
 
 
 def test_missing_package_version_is_non_resumable(tmp_path, caplog, monkeypatch):
@@ -257,6 +318,50 @@ def test_unusable_jsonl_lines_are_tolerated(tmp_path, line, caplog):
     assert _identity_warnings(caplog) == []
 
 
+def test_invalid_utf8_result_file_warns_and_executes(tmp_path, caplog):
+    (tmp_path / "experiment_results.jsonl").write_bytes(b"\xff\xfe")
+    runner = ExperimentRunner(results_dir=str(tmp_path))
+    with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
+        result = runner.run_single(_cfg(), _llm(), skip_completed=True)
+    assert result is not None
+    assert "MGI004" in _codes(caplog)
+    assert str(tmp_path) not in caplog.text
+
+
+def test_jsonl_named_directory_warns_and_executes(tmp_path, caplog):
+    (tmp_path / "unreadable.jsonl").mkdir()
+    runner = ExperimentRunner(results_dir=str(tmp_path))
+    with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
+        result = runner.run_single(_cfg(), _llm(), skip_completed=True)
+    assert result is not None
+    assert "MGI004" in _codes(caplog)
+
+
+def test_scan_failure_disables_skip_even_with_a_valid_copy(tmp_path, caplog):
+    runner = ExperimentRunner(results_dir=str(tmp_path))
+    assert runner.run_single(_cfg(), _llm(), skip_completed=False) is not None
+    (tmp_path / "unreadable.jsonl").write_bytes(b"\xff")
+    with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
+        assert runner.run_single(_cfg(), _llm(), skip_completed=True) is not None
+    assert "MGI004" in _codes(caplog)
+
+
+def test_invalid_matching_record_disables_skip_even_with_a_valid_copy(tmp_path, caplog):
+    runner = ExperimentRunner(results_dir=str(tmp_path))
+    assert runner.run_single(_cfg(), _llm(), skip_completed=False) is not None
+    path = tmp_path / "experiment_results.jsonl"
+    invalid = {
+        "run_id": "mock-R2-S0-seed42",
+        "identity_schema": 1,
+        "identity_sha256": "not-a-digest",
+        "identity": {},
+    }
+    path.write_text(path.read_text(encoding="utf-8") + json.dumps(invalid) + "\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
+        assert runner.run_single(_cfg(), _llm(), skip_completed=True) is not None
+    assert "MGI004" in _codes(caplog)
+
+
 def test_a_junk_line_does_not_hide_a_real_completed_identity(tmp_path):
     runner = ExperimentRunner(results_dir=str(tmp_path))
     runner.run_single(_cfg(), _llm(), skip_completed=False)
@@ -271,6 +376,23 @@ def test_record_without_run_id_creates_no_completed_identity(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
         assert runner.run_single(_cfg(), _llm(), skip_completed=True) is not None
     assert _identity_warnings(caplog) == []
+
+
+def test_valid_identity_without_any_label_cannot_skip(tmp_path):
+    producer = ExperimentRunner(results_dir=str(tmp_path / "producer"))
+    result = producer.run_single(_cfg(), _llm(), skip_completed=False)
+    record = {
+        "identity_schema": result.identity["identity_schema"],
+        "identity_sha256": result.identity_sha256,
+        "identity": result.identity,
+    }
+    results_dir = tmp_path / "consumer"
+    results_dir.mkdir()
+    (results_dir / "experiment_results.jsonl").write_text(
+        json.dumps(record) + "\n", encoding="utf-8"
+    )
+    consumer = ExperimentRunner(results_dir=str(results_dir))
+    assert consumer.run_single(_cfg(), _llm(), skip_completed=True) is not None
 
 
 def test_conflicting_payloads_for_one_digest_disable_skipping(caplog):
@@ -352,7 +474,7 @@ def test_result_shape_and_output_paths_are_preserved(tmp_path):
         assert key in record
     assert record["model_id"] == "mock"  # frozen: raw id still on the result
     assert record["run_label"] == "mock-R2-S0-seed42"
-    assert record["run_id"].startswith("mock-R2-S0-seed42--")
+    assert record["run_id"] == "mock-R2-S0-seed42"
     assert record["identity_schema"] == 1
     assert len(record["identity_sha256"]) == 64
 
@@ -410,23 +532,32 @@ def test_collision_diagnostics_never_print_values(tmp_path, caplog):
     assert "cases_per_condition" in message
 
 
-@pytest.mark.parametrize("provider", ["openai_compatible", "bedrock", "sagemaker"])
-def test_cloud_provider_identity_parameters_exclude_credentials(provider, monkeypatch):
-    monkeypatch.setenv("MECH_GOV_LLM_BASE_URL", "https://user:secret@internal.example/v1")
+@pytest.mark.parametrize("provider", ["openai_compatible", "bedrock"])
+def test_resumable_cloud_provider_identity_excludes_credentials(provider, monkeypatch):
+    monkeypatch.setenv("MECH_GOV_LLM_BASE_URL", "https://internal.example/v1")
     monkeypatch.setenv("MECH_GOV_LLM_API_KEY", "sk-super-secret")
     monkeypatch.setenv("MECH_GOV_LLM_MODEL", "gpt-test")
-    if provider != "openai_compatible":
+    if provider == "bedrock":
         pytest.importorskip("boto3")
     config = {
         "openai_compatible": {"provider": "openai_compatible"},
         "bedrock": {"provider": "bedrock", "model_id": "anthropic.test"},
-        "sagemaker": {"provider": "sagemaker", "endpoint_name": "internal-endpoint"},
     }[provider]
     parameters = create_llm(config).resume_identity_parameters()
-    assert parameters == {"top_p": 1.0}
+    assert parameters["provider"] == provider
+    assert parameters["top_p"] == 1.0
+    assert any(key.endswith("_sha256") for key in parameters)
     serialized = json.dumps(parameters)
     for secret in ("secret", "sk-super-secret", "internal", "us-east-1"):
         assert secret not in serialized
+
+
+def test_sagemaker_is_non_resumable_without_account_scoped_deployment_identity(monkeypatch):
+    pytest.importorskip("boto3")
+    llm = create_llm(
+        {"provider": "sagemaker", "endpoint_name": "internal-endpoint", "region": "eu-west-1"}
+    )
+    assert llm.resume_identity_parameters() is None
 
 
 def test_canonical_bytes_of_a_stored_payload_match_the_live_one(tmp_path):

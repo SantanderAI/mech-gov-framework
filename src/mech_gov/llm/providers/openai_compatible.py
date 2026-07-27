@@ -15,14 +15,45 @@ Configuration (config dict keys, with environment-variable fallbacks):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
 from mech_gov.llm.base import LLMInterface, LLMResponse
+
+
+def _endpoint_sha256(base_url: str, path: str) -> str | None:
+    """Fingerprint a credential-free endpoint target, or refuse ambiguous URLs."""
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        not parsed.scheme
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    if port == {"http": 80, "https": 443}.get(parsed.scheme.lower()):
+        port = None
+    target = [
+        parsed.scheme.lower(),
+        parsed.hostname.lower(),
+        port,
+        parsed.path.rstrip("/"),
+        path,
+    ]
+    canonical = json.dumps(target, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class OpenAICompatibleLLM(LLMInterface):
@@ -64,8 +95,15 @@ class OpenAICompatibleLLM(LLMInterface):
         return "openai_compatible"
 
     def resume_identity_parameters(self) -> dict[str, Any] | None:
-        """Only ``top_p`` affects results; base URL, key, path and timeout do not."""
-        return {"top_p": self._top_p}
+        """Declare adapter, endpoint fingerprint and result-affecting parameters."""
+        endpoint_sha256 = _endpoint_sha256(self._base_url, self._path)
+        if endpoint_sha256 is None:
+            return None
+        return {
+            "provider": "openai_compatible",
+            "endpoint_sha256": endpoint_sha256,
+            "top_p": self._top_p,
+        }
 
     def invoke(
         self,

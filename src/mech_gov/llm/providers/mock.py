@@ -77,8 +77,9 @@ class MockLLM(LLMInterface):
         if self._responder is not None:
             return None
         canned = self._responses if self._responses else [self._response]
-        digest = hashlib.sha256("\0".join(canned).encode("utf-8")).hexdigest()
-        return {"responses_sha256": digest}
+        canonical = json.dumps(canned, ensure_ascii=False, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return {"provider": "mock", "responses_sha256": digest}
 
     def invoke(
         self,

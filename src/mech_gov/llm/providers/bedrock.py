@@ -14,6 +14,7 @@ Optional dependency — requires ``pip install mech-gov-framework[bedrock]``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
 import time
@@ -92,8 +93,13 @@ class BedrockLLM(LLMInterface):
         return "bedrock"
 
     def resume_identity_parameters(self) -> dict[str, Any] | None:
-        """Only ``top_p`` affects results; region, profile and retries do not."""
-        return {"top_p": self._top_p}
+        """Declare the adapter, privacy-safe region identity and ``top_p``."""
+        region_sha256 = hashlib.sha256(self._region.encode("utf-8")).hexdigest()
+        return {
+            "provider": "bedrock",
+            "region_sha256": region_sha256,
+            "top_p": self._top_p,
+        }
 
     def invoke(
         self,

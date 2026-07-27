@@ -21,10 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hashed model ID, semantic distributions fingerprint, provider parameters,
   package version). Only the full digest decides resume.
 - `LLMInterface.resume_identity_parameters()` — optional hook for providers to
-  declare generation-affecting parameters. The default returns `None`, so
-  existing custom providers are unaffected and are treated as non-resumable.
-  Implemented for the bundled mock, OpenAI-compatible, Bedrock and SageMaker
-  providers.
+  declare adapter/deployment identity plus generation-affecting parameters.
+  The default returns `None`, so existing custom providers remain
+  API-compatible and are treated as non-resumable. Implemented for the bundled
+  mock, OpenAI-compatible and Bedrock providers. SageMaker remains
+  non-resumable because endpoint name and region do not establish an
+  account-scoped deployment identity.
 - Results now include `run_label`, `identity_schema`, `identity_sha256` and
   `identity` alongside the existing fields.
 - Stable identity warning codes `MGI001`–`MGI007` on the
@@ -34,16 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   result files.
 
 ### Changed
-- `run_id` is now `<run_label>--<12 hex>` for resumable runs. It remains an
-  opaque string prefixed by the previous readable label; non-resumable runs keep
-  the bare label.
+- `run_id` keeps the previous readable format for backward compatibility.
+  `identity_sha256`, not `run_id`, decides whether a run may be skipped.
 - Runs whose identity cannot be established (no stable model ID, undeclared
-  provider parameters, missing package version) always execute rather than
-  risking a wrong skip.
+  provider/deployment parameters, unreadable completion state, missing package
+  version) always execute rather than risking a wrong skip.
 - Legacy records without identity metadata are read, never rewritten, and never
   treated as equivalent to a versioned identity.
 - The distributions configuration is loaded before the completion check, since
   its content participates in run identity.
+- OpenAI-compatible endpoint targets and Bedrock regions are represented only
+  by SHA-256 fingerprints. Raw endpoint URLs, credentials and private paths are
+  excluded. These fingerprints provide stable pseudonymous identity, not
+  confidentiality.
 
 - Open-source readiness scaffolding:
   - Apache 2.0 `NOTICE`, expanded `CONTRIBUTING.md` (CLA + issue/PR flow),
