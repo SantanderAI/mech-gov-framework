@@ -229,7 +229,7 @@ def _scan_completion_index(results_dir: Path, warnings: IdentityWarnings) -> _Co
                         continue
                     try:
                         record = json.loads(line)
-                    except (json.JSONDecodeError, RecursionError):
+                    except (ValueError, RecursionError):
                         continue
                     if not isinstance(record, Mapping):
                         continue

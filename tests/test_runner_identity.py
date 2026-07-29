@@ -349,6 +349,7 @@ def test_tampered_payload_warns_and_executes(tmp_path, caplog):
         "42",  # valid JSON, not an object
         '{"run_id": 123}',  # object with a non-string label
         '{"run_id": null}',  # object with an empty label
+        '{"run_id":"x","seed":' + "1" * 5000 + "}",  # oversized integer
     ],
 )
 def test_unusable_jsonl_lines_are_tolerated(tmp_path, line, caplog):

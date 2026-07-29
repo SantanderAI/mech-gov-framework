@@ -72,6 +72,8 @@ class LLMInterface(ABC):
         run is really equivalent to the one being requested. Return a mapping of
         allowlisted public values and privacy-safe fingerprints. Include the
         adapter kind and enough deployment identity to distinguish backends.
+        The mapping is persisted verbatim as ``identity.provider_parameters`` in
+        every result record, so every value must be safe for long-term storage.
         Never return an API key, credential, raw private URL, profile name,
         endpoint, timeout, or path. Opaque values such as user-supplied
         callables cannot be fingerprinted; return ``None`` for them.
