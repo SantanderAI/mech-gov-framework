@@ -218,7 +218,7 @@ def _scan_completion_index(results_dir: Path, warnings: IdentityWarnings) -> _Co
         paths = list(_result_files(results_dir))
     except OSError:
         index.scan_failed = True
-        warnings.emit("MGI004", "<results-dir>")
+        warnings.emit("MGI008", "<results-dir>")
         return index
     for path in paths:
         try:
@@ -245,7 +245,7 @@ def _scan_completion_index(results_dir: Path, warnings: IdentityWarnings) -> _Co
                             warnings.emit("MGI004", str(path))
         except (OSError, UnicodeError):
             index.scan_failed = True
-            warnings.emit("MGI004", str(path))
+            warnings.emit("MGI008", str(path))
     return index
 
 
@@ -255,6 +255,7 @@ def _resolve_identity(
     label: str,
     dist_config: Mapping[str, Any],
     warnings: IdentityWarnings,
+    warn_non_resumable: bool = True,
 ) -> RunIdentity | None:
     """Build the versioned identity, or return None when the run is non-resumable."""
     try:
@@ -265,11 +266,13 @@ def _resolve_identity(
         model_id = ""
         parameters = None
     if not isinstance(model_id, str) or not model_id or not isinstance(parameters, Mapping):
-        warnings.emit("MGI006", label)
+        if warn_non_resumable:
+            warnings.emit("MGI006", label)
         return None
     version = _package_version()
     if not version:
-        warnings.emit("MGI007", label)
+        if warn_non_resumable:
+            warnings.emit("MGI007", label)
         return None
     try:
         return build_run_identity(
@@ -285,7 +288,8 @@ def _resolve_identity(
             package_version=version,
         )
     except Exception:
-        warnings.emit("MGI006", label)
+        if warn_non_resumable:
+            warnings.emit("MGI006", label)
         return None
 
 
@@ -348,7 +352,14 @@ class ExperimentRunner:
         """Resolve identity inputs before the completion check and decide on skipping."""
         dist_config = load_distributions(config.distributions_config_path)
         warnings = IdentityWarnings()
-        identity = _resolve_identity(config, llm, label, dist_config, warnings)
+        identity = _resolve_identity(
+            config,
+            llm,
+            label,
+            dist_config,
+            warnings,
+            warn_non_resumable=skip_completed,
+        )
         skip = skip_completed and _decide_skip(
             identity, label, self._completion_index(warnings), warnings
         )

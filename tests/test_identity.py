@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+from decimal import localcontext
 
 import pytest
 
@@ -71,6 +72,19 @@ def test_schema_one_has_a_pinned_canonical_vector():
         "2c30110d97dee330e1bb12dcc76108cd"  # pragma: allowlist secret
     )
     assert ident.digest == expected_digest
+
+
+def test_canonical_numbers_ignore_ambient_decimal_precision():
+    expected = canonical_bytes(identity().payload)
+    with localcontext() as context:
+        context.prec = 3
+        assert canonical_bytes(identity().payload) == expected
+        assert distributions_digest({"value": 1234.5678}) != distributions_digest(
+            {"value": 1234.5679}
+        )
+        assert distributions_digest({"value": 10**30 + 1}) != distributions_digest(
+            {"value": 10**30 + 2}
+        )
 
 
 def test_payload_carries_exactly_the_declared_fields():

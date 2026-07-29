@@ -151,6 +151,35 @@ def test_openai_compatible_default_port_is_semantically_stable():
     assert implicit.resume_identity_parameters() == explicit.resume_identity_parameters()
 
 
+def test_openai_compatible_top_p_changes_identity():
+    first = OpenAICompatibleLLM(base_url="https://example.test/v1", model="model", top_p=0.8)
+    second = OpenAICompatibleLLM(base_url="https://example.test/v1", model="model", top_p=0.9)
+    warnings = IdentityWarnings()
+    first_identity = _resolve_identity(_cfg(), first, "label", {}, warnings)
+    second_identity = _resolve_identity(_cfg(), second, "label", {}, warnings)
+    assert first_identity is not None and second_identity is not None
+    assert first_identity.digest != second_identity.digest
+
+
+def test_bedrock_top_p_changes_identity(monkeypatch):
+    boto3 = pytest.importorskip("boto3")
+
+    class _Session:
+        def client(self, *_args, **_kwargs):
+            return object()
+
+    monkeypatch.setattr(boto3, "Session", lambda **_kwargs: _Session())
+    from mech_gov.llm.providers.bedrock import BedrockLLM
+
+    first = BedrockLLM("model", top_p=0.8)
+    second = BedrockLLM("model", top_p=0.9)
+    warnings = IdentityWarnings()
+    first_identity = _resolve_identity(_cfg(), first, "label", {}, warnings)
+    second_identity = _resolve_identity(_cfg(), second, "label", {}, warnings)
+    assert first_identity is not None and second_identity is not None
+    assert first_identity.digest != second_identity.digest
+
+
 def test_openai_compatible_credentialed_endpoint_is_non_resumable():
     llm = OpenAICompatibleLLM(
         base_url="https://user:secret@example.test/v1",  # pragma: allowlist secret
@@ -178,6 +207,18 @@ def test_opaque_provider_is_non_resumable(tmp_path, caplog):
     assert first.identity == {} and first.identity_sha256 == ""
     assert first.run_id == first.run_label
     assert "MGI006" in _codes(caplog)
+
+
+def test_nonresumable_provider_is_quiet_when_resume_is_disabled(tmp_path, caplog):
+    runner = ExperimentRunner(results_dir=str(tmp_path))
+    with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
+        result = runner.run_single(
+            _cfg(),
+            MockLLM(responder=lambda _system, _user: '{"decision": "ESCALATE"}'),
+            skip_completed=False,
+        )
+    assert result is not None and result.identity_sha256 == ""
+    assert _identity_warnings(caplog) == []
 
 
 def test_unavailable_model_id_is_non_resumable(tmp_path, caplog):
@@ -324,7 +365,7 @@ def test_invalid_utf8_result_file_warns_and_executes(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
         result = runner.run_single(_cfg(), _llm(), skip_completed=True)
     assert result is not None
-    assert "MGI004" in _codes(caplog)
+    assert "MGI008" in _codes(caplog)
     assert str(tmp_path) not in caplog.text
 
 
@@ -334,7 +375,7 @@ def test_jsonl_named_directory_warns_and_executes(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
         result = runner.run_single(_cfg(), _llm(), skip_completed=True)
     assert result is not None
-    assert "MGI004" in _codes(caplog)
+    assert "MGI008" in _codes(caplog)
 
 
 def test_scan_failure_disables_skip_even_with_a_valid_copy(tmp_path, caplog):
@@ -343,7 +384,7 @@ def test_scan_failure_disables_skip_even_with_a_valid_copy(tmp_path, caplog):
     (tmp_path / "unreadable.jsonl").write_bytes(b"\xff")
     with caplog.at_level(logging.WARNING, logger="mech_gov.experiment.identity"):
         assert runner.run_single(_cfg(), _llm(), skip_completed=True) is not None
-    assert "MGI004" in _codes(caplog)
+    assert "MGI008" in _codes(caplog)
 
 
 def test_invalid_matching_record_disables_skip_even_with_a_valid_copy(tmp_path, caplog):
@@ -528,7 +569,10 @@ def test_collision_diagnostics_never_print_values(tmp_path, caplog):
         runner.run_single(_cfg(M), _llm("arn:aws:bedrock:eu-west-1::deployment"), True)
     message = _identity_warnings(caplog)[0].message
     assert "arn:aws" not in message
-    assert str(N) not in message and str(M) not in message
+    assert f"cases_per_condition={N}" not in message
+    assert f"cases_per_condition={M}" not in message
+    assert "mock-R2-S0-seed42" not in message
+    assert "reference_sha256=" in message
     assert "cases_per_condition" in message
 
 
@@ -547,6 +591,11 @@ def test_resumable_cloud_provider_identity_excludes_credentials(provider, monkey
     assert parameters["provider"] == provider
     assert parameters["top_p"] == 1.0
     assert any(key.endswith("_sha256") for key in parameters)
+    assert set(parameters) == {
+        "provider",
+        "top_p",
+        "region_sha256" if provider == "bedrock" else "endpoint_sha256",
+    }
     serialized = json.dumps(parameters)
     for secret in ("secret", "sk-super-secret", "internal", "us-east-1"):
         assert secret not in serialized

@@ -168,6 +168,12 @@ file bytes, so reformatting or editing comments does not invalidate previous
 runs, while a changed parameter does. Equivalent content at a different path
 fingerprints identically.
 
+Canonical numbers are type-tagged and derived exactly from integers or the
+round-trip representation of finite floats. Decimal normalization uses explicit
+precision equal to the operand's digit count, so a caller's mutable
+`decimal` context cannot round two configurations into one identity.
+Non-finite floats are rejected.
+
 ### Non-resumable runs
 
 Some runs cannot prove equivalence. They always execute, and log why:
@@ -193,6 +199,14 @@ providers remain API-compatible but always execute until they declare a stable
 identity. The bundled callable and SageMaker providers are non-resumable:
 arbitrary callables are opaque, and an endpoint name plus region does not prove
 which account-scoped SageMaker deployment is selected.
+
+The bundled OpenAI-compatible and Bedrock adapters currently expose exactly one
+constructor-configured generation parameter, `top_p`; both declare it alongside
+their privacy-safe target fingerprint. Per-call `temperature` and `max_tokens`
+come from governance-regime code and are therefore covered by the package
+version. Connection, credential/profile, timeout, and retry settings affect
+transport behavior rather than the successful response contract and are
+deliberately excluded.
 
 Return only public values and privacy-safe fingerprints — never an API key,
 credential, raw private URL, profile name, endpoint, timeout, or path.
@@ -223,8 +237,15 @@ but never rewritten or deleted. The first post-upgrade sweep can therefore
 repeat legacy provider calls and incur their normal cost.
 
 Identity and resume warnings use the `mech_gov.experiment.identity` logger with
-stable codes `MGI001`–`MGI007`. They name the configuration fields that differ
-but never print their values.
+stable codes `MGI001`–`MGI008`. They name the configuration fields that differ
+and include a 12-hex SHA-256 reference for correlation, but never print the raw
+run label, result path, or configuration values. `MGI008` distinguishes
+unreadable completion state from a stored payload that failed validation.
+
+Distribution configuration is loaded before any resume decision because its
+parsed content is part of identity. A missing or invalid distributions file
+therefore raises even when an older readable label exists; silently skipping
+without validating an identity input would be unsafe.
 
 ## CLI
 

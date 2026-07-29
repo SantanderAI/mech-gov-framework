@@ -29,9 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   account-scoped deployment identity.
 - Results now include `run_label`, `identity_schema`, `identity_sha256` and
   `identity` alongside the existing fields.
-- Stable identity warning codes `MGI001`–`MGI007` on the
+- Stable identity warning codes `MGI001`–`MGI008` on the
   `mech_gov.experiment.identity` logger. Diagnostics name the fields that
-  differ and never print their values.
+  differ, use a pseudonymous reference for correlation, distinguish unreadable
+  completion state, and never print raw labels, paths, or parameter values.
 - README section documenting resume semantics, non-resumable runs and legacy
   result files.
 

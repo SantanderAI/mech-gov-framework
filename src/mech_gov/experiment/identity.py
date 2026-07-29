@@ -30,7 +30,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import MAX_EMAX, MIN_EMIN, Context, Decimal
 from typing import Any
 
 logger = logging.getLogger("mech_gov.experiment.identity")
@@ -56,6 +56,7 @@ WARNING_SUMMARIES = {
     "MGI005": "identity digest is claimed by conflicting payloads",
     "MGI006": "stable model or provider identity is unavailable",
     "MGI007": "package provenance is unavailable",
+    "MGI008": "completion state could not be read safely",
 }
 
 _FULL_DIGEST_RE = re.compile(r"\A[0-9a-f]{64}\Z")
@@ -72,12 +73,14 @@ def _canonical_number(value: int | float, path: str) -> str:
     as_decimal = Decimal(value) if isinstance(value, int) else Decimal(repr(value))
     if as_decimal == 0:
         return "0"
-    return str(as_decimal.normalize())
+    # Normalize under exact precision, never the mutable ambient context.
+    precision = max(1, len(as_decimal.as_tuple().digits))
+    exact_context = Context(prec=precision, Emax=MAX_EMAX, Emin=MIN_EMIN)
+    return str(as_decimal.normalize(exact_context))
 
 
 def _normalize(value: Any, path: str = "") -> Any:
     """Recursively rewrite a loaded value into a type-tagged canonical form.
-
     Scalars are tagged so that ``None``, ``False`` and the strings ``"z:"`` or
     ``"b:false"`` can never collide. Mapping keys must be strings and are
     ordered by the serializer; list order stays significant.
@@ -233,13 +236,14 @@ class IdentityWarnings:
         self._seen: set[tuple[str, str]] = set()
 
     def emit(self, code: str, label: str, fields: Sequence[str] = ()) -> None:
-        """Log one deduplicated warning naming changed fields but no values."""
         if (code, label) in self._seen:
             return
         self._seen.add((code, label))
+        reference = hashlib.sha256(label.encode("utf-8")).hexdigest()[:12]
         logger.warning(
-            "[%s] %s; fields=%s; action=execute",
+            "[%s] %s; reference_sha256=%s; fields=%s; action=execute",
             code,
             WARNING_SUMMARIES[code],
+            reference,
             ",".join(fields),
         )
